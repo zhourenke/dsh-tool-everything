@@ -328,6 +328,26 @@ function formatFiletime(filetime: number): string {
 }
 
 /**
+ * Convert a Windows attribute bitmask (es -attribs outputs a NUMBER) into a
+ * DIR-style letter string matching Everything's /a filter syntax
+ * (e.g. 32 → 'A' for Archive, 6 → 'HS' for Hidden+System). Non-numeric
+ * values pass through as-is; zero attributes render as '-'.
+ */
+function formatAttributes(attr: unknown): string {
+  if (typeof attr !== 'number') {
+    return attr === undefined || attr === null ? '' : String(attr)
+  }
+  const map: Array<[number, string]> = [
+    [0x1, 'R'], [0x2, 'H'], [0x4, 'S'], [0x10, 'D'], [0x20, 'A'],
+    [0x40, 'V'], [0x80, 'N'], [0x100, 'T'], [0x400, 'L'], [0x800, 'C'],
+    [0x1000, 'O'], [0x2000, 'I'], [0x4000, 'E'],
+  ]
+  let out = ''
+  for (const [bit, ch] of map) if ((attr & bit) !== 0) out += ch
+  return out || '-'
+}
+
+/**
  * Parse the `es -json` stdout into an array of result entries.
  *
  * es wraps its JSON array in an EXTRA array level — `[[{...}]]` instead of
@@ -771,7 +791,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
           result.date_accessed = formatFiletime(entry.date_accessed)
         }
         if (entry.extension !== undefined) result.extension = entry.extension
-        if (entry.attributes !== undefined) result.attributes = entry.attributes
+        if (entry.attributes !== undefined) result.attributes = formatAttributes(entry.attributes)
         return result
       })
 
