@@ -198,7 +198,7 @@ function buildEsCommand(input: EverythingInput): string[] {
 
   // Sort
   if (input.sortBy !== undefined) {
-    const direction = input.sortDesc ? '-descending' : '-ascending'
+    const direction = input.sortDesc ? 'descending' : 'ascending'
     esArgs.push('-sort', `${input.sortBy}-${direction}`)
   }
 
