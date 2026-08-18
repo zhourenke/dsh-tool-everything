@@ -1,0 +1,5 @@
+# The dsh-tool-everything bundle patch: joins the Everything search tool
+# (everything_search) into the host composition.
+- insert:
+    - id: tool-everything
+      name: '@deepseek-ai/dsh-tool-everything'
