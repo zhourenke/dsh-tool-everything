@@ -148,7 +148,7 @@ Once installed, the model can call `everything_search` with any Everything searc
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `timeoutMs` | `30000` | Cooperative tool-call timeout budget (ms). |
+| `timeoutMs` | `1200000` | Cooperative tool-call timeout budget (ms). 20 minutes, matching a typical deployment's global command timeout. |
 | `graceMs` | `3000` | Process termination grace period past timeout (ms). |
 | `stderrMaxBytes` | `65536` | Stderr diagnostic tail budget (bytes). |
 | `rawOutputMaxBytes` | `20000000` | Max stdout captured for parsing (bytes). |

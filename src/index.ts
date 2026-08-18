@@ -25,7 +25,7 @@ const DEFAULT_MAX_RESULTS = 50
 const ABSOLUTE_MAX_RESULTS = 100000
 
 /** Default cooperative tool-call timeout budget in milliseconds. */
-const DEFAULT_TIMEOUT_MS = 30000
+const DEFAULT_TIMEOUT_MS = 1200000
 
 /** Default terminate grace period for the `es` process (ms). */
 const DEFAULT_GRACE_MS = 3000
@@ -141,78 +141,93 @@ function parseEverythingArgs(args: Record<string, unknown>): EverythingInput {
 // ---------------------------------------------------------------------------
 
 /**
- * Escape a single argument for use in a Windows cmd /c command string.
- *
- * Two distinct rules, verified against cmd's actual parsing of es.exe:
- * - `mode: 'query'` (the Everything search text): every shell-special
- *   character — including SPACE — is escaped with caret (^), cmd's escape
- *   character. Caret-escaping spaces is the only reliable way to keep a
- *   multi-word Everything query (`*.pdf | *.txt`) intact, because cmd splits
- *   arguments on unescaped spaces. Quotes are never used for the query: es
- *   passes them through to Everything, where `"..."` means a literal search,
- *   silently producing zero results.
- * - `mode: 'option'` (the value of an option like `-path`): the value is
- *   wrapped in double quotes, which protects spaces and any `& | < >` inside
- *   it. es strips the quotes from option values (verified: `-path "C:\Program
- *   Files\MacType"` works), so the quoted path is received correctly.
+ * Escape the Everything query for embedding in a single `cmd /c` command
+ * string. Every shell-special character — including SPACE — is escaped with
+ * caret (^), cmd's escape character, so the query is passed to es literally:
+ * `size:>1gb` stays `size:>1gb` (not a redirection), `*.pdf | *.txt` stays
+ * one OR search (not a pipe), and `Windows11 25H2.iso` stays one multi-word
+ * query (cmd splits on spaces, but es merges its positional arguments back
+ * into the search text). Quotes are NEVER used: es passes them through to
+ * Everything, where `"..."` means a literal search and silently returns zero
+ * results.
  */
-function escapeForCmd(arg: string, mode: 'query' | 'option'): string {
-  if (mode === 'option') {
-    return `"${arg}"`
-  }
+function escapeForCmd(arg: string): string {
   return arg.replace(/[ &|<>^()"]/g, (ch) => `^${ch}`)
 }
 
 /**
- * Build the argv array for the `es` command. On Windows, the command is
- * wrapped in `cmd /c chcp 65001 > nul & es` so the console code page is
- * switched to UTF-8 (65001) before es runs, ensuring that filenames with
- * non-ASCII characters are output as UTF-8 rather than the system's ANSI
- * code page (e.g. GB2312 on Chinese Windows).
+ * Build the argv array for the spawn call: a single
+ * `["cmd", "/c", "chcp 65001>nul & es ..."]` command string. The console
+ * code page is switched to UTF-8 (65001) before es runs because es outputs
+ * filenames in the system ANSI code page (e.g. GB2312 on Chinese Windows),
+ * which the harness subprocess decodes as UTF-8 and garbles.
+ *
+ * The command is ONE joined string, not separate argv elements: cmd /c
+ * strips the outer quotes Node adds, leaving the caret escapes to take
+ * effect. Separate argv elements fail because Node auto-quotes
+ * space-containing elements and cmd then keeps those quotes (a quote inside
+ * the search text becomes a literal Everything search marker).
+ *
+ * The `path` argument is folded into the query as Everything's `path:`
+ * function prefix (`path:C:\Program^ Files\MacType *.ini`) rather than the
+ * `-path` option: a `-path` value containing spaces needs quotes, and Node's
+ * `\"` escaping of those quotes breaks cmd. The `path:` function handles
+ * space-containing paths correctly after caret-escaping.
+ *
+ * es also parses its option list strictly left to right and is greedy about
+ * the search-mode switches: -r (regex) and -i/-w/-p (case/whole-word/
+ * match-path) must be the LAST options, immediately before the query. Any
+ * option that follows them (e.g. -size, -n, -sort) is consumed as part of
+ * the search text and silently returns zero results — verified empirically:
+ * `-size -n 5 -r query` works, `-r -size query` does not.
  */
 function buildEsCommand(input: EverythingInput): string[] {
   const esArgs: string[] = ['-json']
 
-  // Limit results
-  esArgs.push('-n', String(input.maxResults))
-
-  // Search options
-  if (input.regex) esArgs.push('-r')
-  if (input.matchCase) esArgs.push('-i')
-  if (input.matchWholeWord) esArgs.push('-w')
-  if (input.matchPath) esArgs.push('-p')
-
-  // File/folder filters
-  if (input.fileOnly) esArgs.push('/a-d')
-  if (input.folderOnly) esArgs.push('/ad')
-
-  // Path filter
-  if (input.path !== undefined) {
-    esArgs.push('-path', escapeForCmd(input.path, 'option'))
-  }
-
-  // Attributes filter
-  if (input.attributes !== undefined) {
-    esArgs.push(`/a${input.attributes}`)
-  }
-
-  // Sort
-  if (input.sortBy !== undefined) {
-    const direction = input.sortDesc ? 'descending' : 'ascending'
-    esArgs.push('-sort', `${input.sortBy}-${direction}`)
-  }
-
-  // Columns (display options)
+  // 1. Display columns first (never after the search switches).
   for (const col of input.columns) {
     const flag = COLUMN_FLAGS[col]
     if (flag !== undefined) esArgs.push(flag)
   }
 
-  // The query is the last argument; it may contain cmd special characters
-  // (e.g. > in size:>1gb, | in *.pdf|*.txt, spaces in multi-word queries),
-  // so every one of them must be caret-escaped. Quotes would be passed to
-  // Everything as a literal-search marker and return zero results.
-  esArgs.push(escapeForCmd(input.query, 'query'))
+  // 2. Result-count limit.
+  esArgs.push('-n', String(input.maxResults))
+
+  // 3. File/folder type filters.
+  if (input.fileOnly) esArgs.push('/a-d')
+  if (input.folderOnly) esArgs.push('/ad')
+
+  // 4. Attribute filter.
+  if (input.attributes !== undefined) {
+    esArgs.push(`/a${input.attributes}`)
+  }
+
+  // 5. Sort.
+  if (input.sortBy !== undefined) {
+    const direction = input.sortDesc ? 'descending' : 'ascending'
+    esArgs.push('-sort', `${input.sortBy}-${direction}`)
+  }
+
+  // 6. Non-greedy search switches, in any order among themselves.
+  if (input.matchCase) esArgs.push('-i')
+  if (input.matchWholeWord) esArgs.push('-w')
+  if (input.matchPath) esArgs.push('-p')
+
+  // 7. -r is greedy: it MUST be the final option, right before the query.
+  if (input.regex) esArgs.push('-r')
+
+  // 8. Build the query: fold the path argument into Everything's path:
+  //    function prefix so space-containing paths need no quotes.
+  let query = input.query
+  if (input.path !== undefined) {
+    query = `path:${input.path} ${query}`
+  }
+
+  // The query may contain cmd special characters (e.g. > in size:>1gb, |
+  // in *.pdf|*.txt, spaces in multi-word queries), so every one of them
+  // must be caret-escaped. Quotes would be passed to Everything as a
+  // literal-search marker and return zero results.
+  esArgs.push(escapeForCmd(query))
 
   // Build a single cmd /c command string that:
   // 1. Changes the console code page to UTF-8 (65001)

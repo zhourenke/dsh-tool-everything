@@ -1,0 +1,21 @@
+fix: correct es argument order, quoting, and timeout
+
+Three root causes found via DSH log diagnosis + systematic cmd testing:
+
+1. es is greedy about its search-mode switches: -r (and -i/-w/-p) must be
+   the LAST options before the query. Any option after -r (-size, -n, -path,
+   -sort) is consumed as search text and silently returns zero results.
+   Verified: '-size -n 5 -r query' works, '-r -size query' does not.
+
+2. Node's Windows command-line quoting mangles quotes inside a joined cmd
+   string and auto-quotes separate space-containing argv elements. Solution:
+   keep ONE joined 'cmd /c ...' string (cmd strips the outer quotes, letting
+   caret escapes work) and fold the path argument into the query as
+   Everything's path: function prefix instead of the -path option, so
+   space-containing paths need no quotes at all.
+
+3. timeoutMs default was 30000ms, overriding the deployment's 20-minute
+   global command timeout; raised to 1200000ms.
+
+Also: unwrap es's nested JSON array produced when a display column like
+-size is combined with -r; remove temporary debug logging.
