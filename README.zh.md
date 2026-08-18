@@ -22,7 +22,7 @@ es -h
 
 ## 安装
 
-本插件是一个 **DSH 配置文件包（profile bundle）**——必须在 DSH 配置文件的 `package.json` 中注册，并添加到 `dsh.profile.bundles` 列表中。
+本插件是一个 **DSH 配置文件包（profile bundle）**。目前唯一支持的安装方式是把插件文件夹**直接放置**到 DSH 配置文件的 `node_modules` 中，并在该配置文件的 `dsh.profile.bundles` 列表里注册。**无需 `npm link`、无需 pnpm、无需访问 npm registry**。
 
 ### 找到你的 DSH 配置文件
 
@@ -35,20 +35,20 @@ Get-ChildItem "$env:USERPROFILE\.dsh\profiles" -Name
 
 常见的配置文件：`web`、`tui`、`headless`。配置文件目录为 `$env:USERPROFILE\.dsh\profiles\<名称>\`。
 
-### 方式 A：本地开发（npm link）
-
-在本地开发插件时使用此方式，修改源码后无需重新链接，改动立即生效。
-
-**第 1 步 — 创建插件的全局链接**
+### 第 1 步 — 把插件文件夹复制进配置文件
 
 ```powershell
-cd C:\path\to\dsh-tool-everything
-npm link
+# 若作用域目录不存在则创建
+$target = "$env:USERPROFILE\.dsh\profiles\<名称>\node_modules\@zhourenke"
+New-Item -ItemType Directory -Force $target
+
+# 复制整个插件文件夹（package.json、cordis.patch.yml、lib/ 等）
+Copy-Item -Recurse C:\path\to\dsh-tool-everything "$target\"
 ```
 
-这会在 npm 的全局 `node_modules` 中注册该插件。由于 DSH 自身的包也位于同一目录树中，DSH 可以解析到该链接。
+复制后的目录必须包含 `package.json`（含 `dsh.bundle.patch`）、`cordis.patch.yml` 和 `lib/`。
 
-**第 2 步 — 在配置文件的 package.json 中注册插件**
+### 第 2 步 — 注册 bundle
 
 编辑 `$env:USERPROFILE\.dsh\profiles\<名称>\package.json`：
 
@@ -64,30 +64,11 @@ npm link
   }
 ```
 
-**第 3 步 — 重启 DSH**
+**无需在 `dependencies` 中添加任何条目**——DSH 启动时只按包名从配置文件的 `node_modules` 物理解析 bundle（`dependencies` 条目只对 `pnpm install` 有意义，本插件不依赖它）。
 
-下次启动 DSH 时插件会被加载。修改插件源码后无需重新链接——符号链接持续有效，改动会自动同步。
+### 第 3 步 — 重启 DSH
 
-### 方式 B：通过 npm 发布后（未来）
-
-当包发布到 npm 后：
-
-```powershell
-dsh plugin --profile <名称> add @zhourenke/dsh-tool-everything
-```
-
-该命令会自动添加依赖项和 bundle 条目。然后重启 DSH。
-
-### 方式 C：file: 协议（无需 npm link）
-
-如果不想使用 `npm link`，可以将插件安装为本地文件依赖：
-
-```powershell
-cd "$env:USERPROFILE\.dsh\profiles\<名称>"
-pnpm add "file:C:\path\to\dsh-tool-everything"
-```
-
-然后在同一 `package.json` 的 `dsh.profile.bundles` 数组中手动添加 `"@zhourenke/dsh-tool-everything"`，并重启 DSH。
+下次启动 DSH 时插件会被加载。更新插件源码后重新复制文件夹（或使用 junction 以实现热更新），然后重启 DSH。
 
 ### 验证安装
 

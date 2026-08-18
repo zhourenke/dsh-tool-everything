@@ -22,7 +22,7 @@ Should print the ES help text.
 
 ## Installation
 
-This plugin is a **DSH profile bundle** — it must be registered in a DSH profile's `package.json` and listed in that profile's `dsh.profile.bundles` array.
+This plugin is a **DSH profile bundle**. The only supported installation method is to place the package folder directly into a DSH profile's `node_modules` and list it in that profile's `dsh.profile.bundles` array. No `npm link`, no pnpm, and no registry access is required.
 
 ### Find your DSH profile
 
@@ -35,20 +35,20 @@ Get-ChildItem "$env:USERPROFILE\.dsh\profiles" -Name
 
 Common profiles: `web`, `tui`, `headless`. The profile directory is `$env:USERPROFILE\.dsh\profiles\<name>\`.
 
-### Option A: Local development (npm link)
-
-Use this when you are developing the plugin locally and want changes to apply immediately.
-
-**Step 1 — Create a global link for the plugin**
+### Step 1 — Copy the package folder into the profile
 
 ```powershell
-cd C:\path\to\dsh-tool-everything
-npm link
+# Create the scoped directory if it does not exist
+$target = "$env:USERPROFILE\.dsh\profiles\<name>\node_modules\@zhourenke"
+New-Item -ItemType Directory -Force $target
+
+# Copy the whole plugin folder (package.json, cordis.patch.yml, lib/, ...)
+Copy-Item -Recurse C:\path\to\dsh-tool-everything "$target\"
 ```
 
-This registers the plugin in npm's global `node_modules`, which is the same directory tree DSH's own packages live in, so DSH can resolve it.
+The copied tree must contain `package.json` (with `dsh.bundle.patch`), `cordis.patch.yml`, and `lib/`.
 
-**Step 2 — Register the plugin in your profile's package.json**
+### Step 2 — Register the bundle
 
 Edit `$env:USERPROFILE\.dsh\profiles\<name>\package.json`:
 
@@ -64,30 +64,11 @@ Edit `$env:USERPROFILE\.dsh\profiles\<name>\package.json`:
   }
 ```
 
-**Step 3 — Restart DSH**
+No `dependencies` entry is needed — DSH resolves bundles purely by package name from the profile's `node_modules` at startup (a `dependencies` entry only matters to `pnpm install`, which is not used for this plugin).
 
-The plugin will be loaded on the next DSH startup. After modifying the plugin source, there is no need to re-link — the symlink stays active and changes are reflected automatically.
+### Step 3 — Restart DSH
 
-### Option B: Published npm package (future)
-
-When the package is published to npm:
-
-```powershell
-dsh plugin --profile <name> add @zhourenke/dsh-tool-everything
-```
-
-This adds the dependency and the bundle entry automatically. Then restart DSH.
-
-### Option C: file: protocol (no npm link needed)
-
-If you prefer not to use `npm link`, you can install the plugin as a local file dependency:
-
-```powershell
-cd "$env:USERPROFILE\.dsh\profiles\<name>"
-pnpm add "file:C:\path\to\dsh-tool-everything"
-```
-
-Then manually add `"@zhourenke/dsh-tool-everything"` to the `dsh.profile.bundles` array in the same `package.json`, and restart DSH.
+The plugin is loaded on the next DSH startup. When you update the plugin source, re-copy the folder (or use a junction if you prefer live updates) and restart DSH.
 
 ### Verify the installation
 
