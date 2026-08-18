@@ -53,10 +53,6 @@ This registers the plugin in npm's global `node_modules`, which is the same dire
 Edit `$env:USERPROFILE\.dsh\profiles\<name>\package.json`:
 
 ```diff
-  "dependencies": {
-    "existing-dep": "^1.0.0",
-+   "@deepseek-ai/dsh-tool-everything": "*"
-  },
   "dsh": {
     "profile": {
       "bundles": [

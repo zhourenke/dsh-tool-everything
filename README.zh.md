@@ -53,10 +53,6 @@ npm link
 编辑 `$env:USERPROFILE\.dsh\profiles\<名称>\package.json`：
 
 ```diff
-  "dependencies": {
-    "existing-dep": "^1.0.0",
-+   "@deepseek-ai/dsh-tool-everything": "*"
-  },
   "dsh": {
     "profile": {
       "bundles": [
