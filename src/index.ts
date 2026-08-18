@@ -1,12 +1,12 @@
 /**
- * @deepseek-ai/dsh-tool-everything
+ * @zhourenke/dsh-tool-everything
  *
  * A model-facing Everything search tool powered by the `es` command-line client
  * (es.exe). Provides blazing-fast file search on Windows via the Everything
  * search engine, supporting the full Everything search syntax (wildcards, regex,
  * size:, dm:, etc.).
  *
- * @module @deepseek-ai/dsh-tool-everything
+ * @module @zhourenke/dsh-tool-everything
  */
 
 import z from '@deepseek-ai/schemastery'

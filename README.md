@@ -1,4 +1,4 @@
-# @deepseek-ai/dsh-tool-everything
+# @zhourenke/dsh-tool-everything
 
 English | [中文](README.zh.md)
 
@@ -58,7 +58,7 @@ Edit `$env:USERPROFILE\.dsh\profiles\<name>\package.json`:
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-+       "@deepseek-ai/dsh-tool-everything"
++       "@zhourenke/dsh-tool-everything"
       ]
     }
   }
@@ -73,7 +73,7 @@ The plugin will be loaded on the next DSH startup. After modifying the plugin so
 When the package is published to npm:
 
 ```powershell
-dsh plugin --profile <name> add @deepseek-ai/dsh-tool-everything
+dsh plugin --profile <name> add @zhourenke/dsh-tool-everything
 ```
 
 This adds the dependency and the bundle entry automatically. Then restart DSH.
@@ -87,7 +87,7 @@ cd "$env:USERPROFILE\.dsh\profiles\<name>"
 pnpm add "file:C:\path\to\dsh-tool-everything"
 ```
 
-Then manually add `"@deepseek-ai/dsh-tool-everything"` to the `dsh.profile.bundles` array in the same `package.json`, and restart DSH.
+Then manually add `"@zhourenke/dsh-tool-everything"` to the `dsh.profile.bundles` array in the same `package.json`, and restart DSH.
 
 ### Verify the installation
 

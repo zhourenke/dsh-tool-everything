@@ -1,4 +1,4 @@
-# @deepseek-ai/dsh-tool-everything
+# @zhourenke/dsh-tool-everything
 
 [English](README.md) | 中文
 
@@ -58,7 +58,7 @@ npm link
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-+       "@deepseek-ai/dsh-tool-everything"
++       "@zhourenke/dsh-tool-everything"
       ]
     }
   }
@@ -73,7 +73,7 @@ npm link
 当包发布到 npm 后：
 
 ```powershell
-dsh plugin --profile <名称> add @deepseek-ai/dsh-tool-everything
+dsh plugin --profile <名称> add @zhourenke/dsh-tool-everything
 ```
 
 该命令会自动添加依赖项和 bundle 条目。然后重启 DSH。
@@ -87,7 +87,7 @@ cd "$env:USERPROFILE\.dsh\profiles\<名称>"
 pnpm add "file:C:\path\to\dsh-tool-everything"
 ```
 
-然后在同一 `package.json` 的 `dsh.profile.bundles` 数组中手动添加 `"@deepseek-ai/dsh-tool-everything"`，并重启 DSH。
+然后在同一 `package.json` 的 `dsh.profile.bundles` 数组中手动添加 `"@zhourenke/dsh-tool-everything"`，并重启 DSH。
 
 ### 验证安装
 

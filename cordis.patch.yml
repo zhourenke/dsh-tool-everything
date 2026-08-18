@@ -2,4 +2,4 @@
 # (everything_search) into the host composition.
 - insert:
     - id: tool-everything
-      name: '@deepseek-ai/dsh-tool-everything'
+      name: '@zhourenke/dsh-tool-everything'
