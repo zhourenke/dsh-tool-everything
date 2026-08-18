@@ -309,10 +309,18 @@ function formatFiletime(filetime: number): string {
 
 /**
  * Parse the `es -json` stdout into an array of result entries.
+ *
+ * es wraps its JSON array in an EXTRA array level — `[[{...}]]` instead of
+ * `[{...}]` — when a display column flag (e.g. -size) is combined with -r
+ * (regex mode). This unwraps exactly one level when the outer array holds a
+ * single inner array; a flat array passes through unchanged.
  */
 function parseEsOutput(stdout: string): EsResultEntry[] {
   try {
-    const parsed = JSON.parse(stdout)
+    const parsed: unknown = JSON.parse(stdout)
+    if (Array.isArray(parsed) && parsed.length === 1 && Array.isArray(parsed[0])) {
+      return parsed[0] as EsResultEntry[]
+    }
     if (!Array.isArray(parsed)) {
       throw new EverythingError(
         'es produced unexpected output format (expected JSON array)',
