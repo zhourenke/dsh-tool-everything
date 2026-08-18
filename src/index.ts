@@ -141,50 +141,85 @@ function parseEverythingArgs(args: Record<string, unknown>): EverythingInput {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the argv array for the `es` command.
+ * Escape a single argument for use in a Windows cmd /c command string.
+ *
+ * Two distinct rules, verified against cmd's actual parsing of es.exe:
+ * - `mode: 'query'` (the Everything search text): every shell-special
+ *   character — including SPACE — is escaped with caret (^), cmd's escape
+ *   character. Caret-escaping spaces is the only reliable way to keep a
+ *   multi-word Everything query (`*.pdf | *.txt`) intact, because cmd splits
+ *   arguments on unescaped spaces. Quotes are never used for the query: es
+ *   passes them through to Everything, where `"..."` means a literal search,
+ *   silently producing zero results.
+ * - `mode: 'option'` (the value of an option like `-path`): the value is
+ *   wrapped in double quotes, which protects spaces and any `& | < >` inside
+ *   it. es strips the quotes from option values (verified: `-path "C:\Program
+ *   Files\MacType"` works), so the quoted path is received correctly.
+ */
+function escapeForCmd(arg: string, mode: 'query' | 'option'): string {
+  if (mode === 'option') {
+    return `"${arg}"`
+  }
+  return arg.replace(/[ &|<>^()"]/g, (ch) => `^${ch}`)
+}
+
+/**
+ * Build the argv array for the `es` command. On Windows, the command is
+ * wrapped in `cmd /c chcp 65001 > nul & es` so the console code page is
+ * switched to UTF-8 (65001) before es runs, ensuring that filenames with
+ * non-ASCII characters are output as UTF-8 rather than the system's ANSI
+ * code page (e.g. GB2312 on Chinese Windows).
  */
 function buildEsCommand(input: EverythingInput): string[] {
-  const argv: string[] = ['-json']
+  const esArgs: string[] = ['-json']
 
   // Limit results
-  argv.push('-n', String(input.maxResults))
+  esArgs.push('-n', String(input.maxResults))
 
   // Search options
-  if (input.regex) argv.push('-r')
-  if (input.matchCase) argv.push('-i')
-  if (input.matchWholeWord) argv.push('-w')
-  if (input.matchPath) argv.push('-p')
+  if (input.regex) esArgs.push('-r')
+  if (input.matchCase) esArgs.push('-i')
+  if (input.matchWholeWord) esArgs.push('-w')
+  if (input.matchPath) esArgs.push('-p')
 
   // File/folder filters
-  if (input.fileOnly) argv.push('/a-d')
-  if (input.folderOnly) argv.push('/ad')
+  if (input.fileOnly) esArgs.push('/a-d')
+  if (input.folderOnly) esArgs.push('/ad')
 
   // Path filter
   if (input.path !== undefined) {
-    argv.push('-path', input.path)
+    esArgs.push('-path', escapeForCmd(input.path, 'option'))
   }
 
   // Attributes filter
   if (input.attributes !== undefined) {
-    argv.push(`/a${input.attributes}`)
+    esArgs.push(`/a${input.attributes}`)
   }
 
   // Sort
   if (input.sortBy !== undefined) {
     const direction = input.sortDesc ? '-descending' : '-ascending'
-    argv.push('-sort', `${input.sortBy}-${direction}`)
+    esArgs.push('-sort', `${input.sortBy}-${direction}`)
   }
 
   // Columns (display options)
   for (const col of input.columns) {
     const flag = COLUMN_FLAGS[col]
-    if (flag !== undefined) argv.push(flag)
+    if (flag !== undefined) esArgs.push(flag)
   }
 
-  // The search query (last positional argument)
-  argv.push(input.query)
+  // The query is the last argument; it may contain cmd special characters
+  // (e.g. > in size:>1gb, | in *.pdf|*.txt, spaces in multi-word queries),
+  // so every one of them must be caret-escaped. Quotes would be passed to
+  // Everything as a literal-search marker and return zero results.
+  esArgs.push(escapeForCmd(input.query, 'query'))
 
-  return argv
+  // Build a single cmd /c command string that:
+  // 1. Changes the console code page to UTF-8 (65001)
+  // 2. Redirects chcp's own banner to nul
+  // 3. Runs es with all the arguments
+  const cmdLine = `chcp 65001>nul & es ${esArgs.join(' ')}`
+  return ['cmd', '/c', cmdLine]
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +366,7 @@ async function runEs(
 
   try {
     handle = subprocess.spawn({
-      argv: ['es', ...argv],
+      argv,
       cwd: workdir,
       stdio: {
         stdin: 'ignore',
@@ -352,11 +387,10 @@ async function runEs(
     if (
       message.includes('ENOENT') ||
       message.includes('not found') ||
-      message.includes('spawn es') ||
       message.includes('cannot find')
     ) {
       throw new EverythingError(
-        `${toolName}: the "es" command was not found on PATH. Please ensure Everything (voidtools) and its CLI client (es.exe) are installed and accessible.`,
+        `${toolName}: the "cmd" or "es" command was not found on PATH. Please ensure Everything (voidtools) and its CLI client (es.exe) are installed and accessible.`,
         'ES_NOT_FOUND',
         { cause: error as Error },
       )
