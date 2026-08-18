@@ -1,5 +1,7 @@
 # @deepseek-ai/dsh-tool-everything
 
+English | [中文](README.zh.md)
+
 **Model-facing Everything search tool** — `everything_search` — powered by **es.exe** (Everything command-line client) for blazing-fast file search on Windows.
 
 Leverages the [Everything](https://www.voidtools.com/) search engine by voidtools to provide near-instant file search across NTFS volumes, supporting the full Everything search syntax.
@@ -20,39 +22,85 @@ Should print the ES help text.
 
 ## Installation
 
-### From npm
+This plugin is a **DSH profile bundle** — it must be registered in a DSH profile's `package.json` and listed in that profile's `dsh.profile.bundles` array.
 
-```bash
-npm install @deepseek-ai/dsh-tool-everything
+### Find your DSH profile
+
+First, determine which profile you are using:
+
+```powershell
+# List available profiles
+Get-ChildItem "$env:USERPROFILE\.dsh\profiles" -Name
 ```
 
-### From local path (development)
+Common profiles: `web`, `tui`, `headless`. The profile directory is `$env:USERPROFILE\.dsh\profiles\<name>\`.
 
-```bash
-# In the plugin directory
+### Option A: Local development (npm link)
+
+Use this when you are developing the plugin locally and want changes to apply immediately.
+
+**Step 1 — Create a global link for the plugin**
+
+```powershell
+cd C:\path\to\dsh-tool-everything
 npm link
-
-# In your DSH project
-npm link @deepseek-ai/dsh-tool-everything
 ```
 
-### Add to DSH (cordis.yml)
+This registers the plugin in npm's global `node_modules`, which is the same directory tree DSH's own packages live in, so DSH can resolve it.
 
-```yaml
-# In your agent preset cordis.yml:
-- id: tool-everything
-  name: '@deepseek-ai/dsh-tool-everything'
-  config:
-    timeoutMs: 30000
-    graceMs: 3000
-    stderrMaxBytes: 65536
-    rawOutputMaxBytes: 20000000
+**Step 2 — Register the plugin in your profile's package.json**
+
+Edit `$env:USERPROFILE\.dsh\profiles\<name>\package.json`:
+
+```diff
+  "dependencies": {
+    "existing-dep": "^1.0.0",
++   "@deepseek-ai/dsh-tool-everything": "*"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
++       "@deepseek-ai/dsh-tool-everything"
+      ]
+    }
+  }
 ```
 
-Or via `dsh plugin add`:
+**Step 3 — Restart DSH**
 
-```bash
-dsh plugin add tool-everything @deepseek-ai/dsh-tool-everything
+The plugin will be loaded on the next DSH startup. After modifying the plugin source, there is no need to re-link — the symlink stays active and changes are reflected automatically.
+
+### Option B: Published npm package (future)
+
+When the package is published to npm:
+
+```powershell
+dsh plugin --profile <name> add @deepseek-ai/dsh-tool-everything
+```
+
+This adds the dependency and the bundle entry automatically. Then restart DSH.
+
+### Option C: file: protocol (no npm link needed)
+
+If you prefer not to use `npm link`, you can install the plugin as a local file dependency:
+
+```powershell
+cd "$env:USERPROFILE\.dsh\profiles\<name>"
+pnpm add "file:C:\path\to\dsh-tool-everything"
+```
+
+Then manually add `"@deepseek-ai/dsh-tool-everything"` to the `dsh.profile.bundles` array in the same `package.json`, and restart DSH.
+
+### Verify the installation
+
+After restarting DSH, check that the tool is visible to the model:
+
+```powershell
+# DSH startup logs should show the bundle loading successfully
+# In a conversation, ask the model to list available tools, or call:
+# "用 everything_search 搜索所有 PDF 文件"
 ```
 
 ## Usage
