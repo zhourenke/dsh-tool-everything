@@ -30,7 +30,15 @@ es -h
 dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
 ```
 
-该命令会自动从 GitHub 获取插件，将其安装到配置文件的 `node_modules` 中，并在 `dsh.profile.bundles` 中添加对应条目。然后重启 DSH 即可。
+该命令会从 GitHub 获取插件，安装到配置文件的 `node_modules` 中，并**自动**在 `dsh.profile.bundles` 中添加对应条目（DSH 的 `reconcilePlugins` 机制会检测到该包包含 `dsh.bundle.patch`，自动将其加入 bundle 列表）。然后重启 DSH 即可。
+
+卸载：
+
+```powershell
+dsh plugin --profile web remove @zhourenke/dsh-tool-everything
+```
+
+同样会自动从 `dsh.profile.bundles` 中移除。
 
 > 此方式要求 `dsh` 版本支持 GitHub 包安装。如果遇到问题，请使用方式二。
 

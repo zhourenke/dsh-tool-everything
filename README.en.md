@@ -32,6 +32,14 @@ dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
 
 This fetches the plugin from GitHub, installs it into the profile's `node_modules`, and registers it in `dsh.profile.bundles` automatically. Restart DSH afterwards.
 
+**Uninstall:**
+
+```powershell
+dsh plugin --profile web remove @zhourenke/dsh-tool-everything
+```
+
+This also removes the bundle entry from `dsh.profile.bundles` automatically.
+
 > This requires a DSH version that supports GitHub package installation. If it fails, use Method 2.
 
 ### Method 2: Manual folder placement
