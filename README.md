@@ -1,56 +1,68 @@
 # @zhourenke/dsh-tool-everything
 
-English | [中文](README.zh.md)
+[English](README.en.md) | 中文
 
-**Model-facing Everything search tool** — `everything_search` — powered by **es.exe** (Everything command-line client) for blazing-fast file search on Windows.
+**模型可调用的 Everything 搜索工具** — `everything_search` — 基于 **es.exe**（Everything 命令行客户端），在 Windows 上实现极速文件搜索。
 
-Leverages the [Everything](https://www.voidtools.com/) search engine by voidtools to provide near-instant file search across NTFS volumes, supporting the full Everything search syntax.
+利用 voidtools 的 [Everything](https://www.voidtools.com/) 搜索引擎，在 NTFS 卷上实现近乎即时的文件搜索，支持完整的 Everything 搜索语法。
 
-## Prerequisites
+## 前置条件
 
-- **Windows** (NTFS volumes)
-- **[Everything](https://www.voidtools.com/)** by voidtools (free, installed and running)
-- **es.exe** — the command-line client that ships with Everything, or available as a [standalone download](https://www.voidtools.com/downloads/). Must be discoverable on `PATH`.
+- **Windows**（NTFS 卷）
+- **[Everything](https://www.voidtools.com/)** by voidtools（免费，已安装并运行）
+- **es.exe** — Everything 自带的命令行客户端，也可[单独下载](https://www.voidtools.com/downloads/)。必须能在 `PATH` 中找到。
 
-Verify the installation:
+验证安装：
 
 ```powershell
 es -h
 ```
 
-Should print the ES help text.
+应显示 ES 帮助信息。
 
-## Installation
+## 安装
 
-This plugin is a **DSH profile bundle**. The only supported installation method is to place the package folder directly into a DSH profile's `node_modules` and list it in that profile's `dsh.profile.bundles` array. No `npm link`, no pnpm, and no registry access is required.
+本插件是一个 **DSH 配置文件包（profile bundle）**。安装方式有两种：
 
-### Find your DSH profile
-
-First, determine which profile you are using:
+### 方式一：从 GitHub 安装（推荐）
 
 ```powershell
-# List available profiles
+dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
+```
+
+该命令会自动从 GitHub 获取插件，将其安装到配置文件的 `node_modules` 中，并在 `dsh.profile.bundles` 中添加对应条目。然后重启 DSH 即可。
+
+> 此方式要求 `dsh` 版本支持 GitHub 包安装。如果遇到问题，请使用方式二。
+
+### 方式二：手动放置
+
+将插件文件夹**直接放置**到 DSH 配置文件的 `node_modules` 中，并手动注册。
+
+**找到你的 DSH 配置文件**
+
+```powershell
+# 列出所有可用的配置文件
 Get-ChildItem "$env:USERPROFILE\.dsh\profiles" -Name
 ```
 
-Common profiles: `web`, `tui`, `headless`. The profile directory is `$env:USERPROFILE\.dsh\profiles\<name>\`.
+常见的配置文件：`web`、`tui`、`headless`。配置文件目录为 `$env:USERPROFILE\.dsh\profiles\<名称>\`。
 
-### Step 1 — Copy the package folder into the profile
+**第 1 步 — 把插件文件夹复制进配置文件**
 
 ```powershell
-# Create the scoped directory if it does not exist
-$target = "$env:USERPROFILE\.dsh\profiles\<name>\node_modules\@zhourenke"
+# 若作用域目录不存在则创建
+$target = "$env:USERPROFILE\.dsh\profiles\<名称>\node_modules\@zhourenke"
 New-Item -ItemType Directory -Force $target
 
-# Copy the whole plugin folder (package.json, cordis.patch.yml, lib/, ...)
+# 复制整个插件文件夹（package.json、cordis.patch.yml、lib/ 等）
 Copy-Item -Recurse C:\path\to\dsh-tool-everything "$target\"
 ```
 
-The copied tree must contain `package.json` (with `dsh.bundle.patch`), `cordis.patch.yml`, and `lib/`.
+复制后的目录必须包含 `package.json`（含 `dsh.bundle.patch`）、`cordis.patch.yml` 和 `lib/`。
 
-### Step 2 — Register the bundle
+**第 2 步 — 注册 bundle**
 
-Edit `$env:USERPROFILE\.dsh\profiles\<name>\package.json`:
+编辑 `$env:USERPROFILE\.dsh\profiles\<名称>\package.json`：
 
 ```diff
   "dsh": {
@@ -64,116 +76,116 @@ Edit `$env:USERPROFILE\.dsh\profiles\<name>\package.json`:
   }
 ```
 
-No `dependencies` entry is needed — DSH resolves bundles purely by package name from the profile's `node_modules` at startup (a `dependencies` entry only matters to `pnpm install`, which is not used for this plugin).
+**无需在 `dependencies` 中添加任何条目**——DSH 启动时只按包名从配置文件的 `node_modules` 物理解析 bundle。
 
-### Step 3 — Restart DSH
+**第 3 步 — 重启 DSH**
 
-The plugin is loaded on the next DSH startup. When you update the plugin source, re-copy the folder (or use a junction if you prefer live updates) and restart DSH.
+下次启动 DSH 时插件会被加载。
 
-### Verify the installation
+### 验证安装
 
-After restarting DSH, check that the tool is visible to the model — ask the model to list its tools, or simply ask it to search for a known file.
+重启 DSH 后，让模型列出可用工具，或直接让它搜索一个已知文件。
 
-## Usage
+## 使用方法
 
-Once installed, the model can call `everything_search` with any Everything search query:
+安装后，模型可以调用 `everything_search` 并传入任何 Everything 搜索查询：
 
-### Examples
+### 示例
 
-| Query | Description |
-|-------|-------------|
-| `*.pdf` | All PDF files |
-| `report* 2024` | Files starting with "report" containing "2024" |
-| `size:>1gb` | Files larger than 1 GB |
-| `dm:2024-01-01..2024-12-31` | Files modified in 2024 |
-| `ext:txt content:hello` | Text files containing "hello" |
-| `C:\Projects\* ext:ts` | TypeScript files under C:\Projects |
-| `*.jpg dc:2024-06-01` | JPEGs created on June 1, 2024 |
-| `!hidden` | Exclude hidden files |
+| 查询 | 说明 |
+|------|------|
+| `*.pdf` | 所有 PDF 文件 |
+| `report* 2024` | 文件名以 "report" 开头且包含 "2024" 的文件 |
+| `size:>1gb` | 大于 1GB 的文件 |
+| `dm:2024-01-01..2024-12-31` | 2024 年内修改过的文件 |
+| `ext:txt content:hello` | 包含 "hello" 的文本文件 |
+| `C:\Projects\* ext:ts` | C:\Projects 下的 TypeScript 文件 |
+| `*.jpg dc:2024-06-01` | 2024 年 6 月 1 日创建的 JPEG 图片 |
+| `!hidden` | 排除隐藏文件 |
 
-### Parameters
+### 参数
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `query` | string | ✅ | — | Everything search query. Supports wildcards (`*`, `?`), `content:`, `size:`, `dm:`, `dc:`, `da:`, `ext:`, `path:`, boolean operators (`\|`, `!`, `<...>`), and Everything search syntax. |
-| `max_results` | number | ❌ | 50 | Maximum results to return (1–100000). Use 100000 for exhaustive searches; prefer narrow queries for speed. |
-| `path` | string | ❌ | — | Restrict search to a directory. Space-containing paths work (`C:\Program Files\MacType`). Implemented via Everything's `path:` function, not es's `-path` flag. |
-| `regex` | boolean | ❌ | false | Enable regex search mode (`-r`). Note: Everything's regex engine does NOT support `(...)` grouping — use top-level alternation like `.*\.pdf$\|.*\.txt$`. |
-| `match_case` | boolean | ❌ | false | Case-sensitive matching (`-i`). Default is case-insensitive. |
-| `match_whole_word` | boolean | ❌ | false | Match whole words only (`-w`). |
-| `match_path` | boolean | ❌ | false | Match the full file path (`-p`). |
-| `file_only` | boolean | ❌ | false | Files only, exclude folders (`/a-d`). |
-| `folder_only` | boolean | ❌ | false | Folders only, exclude files (`/ad`). |
-| `sort_by` | string | ❌ | — | Sort field: `name`, `path`, `size`, `extension`, `date-created`, `date-modified`, `date-accessed`. |
-| `sort_desc` | boolean | ❌ | false | Sort descending when `sort_by` is set. |
-| `attributes` | string | ❌ | — | Attribute filter, DIR-style. Letters: `R` read-only, `H` hidden, `S` system, `D` directory, `A` archive, `V` device, `N` normal, `T` temporary, `L` reparse point, `C` compressed, `O` offline, `I` not content indexed, `E` encrypted. Prefix with `-` to exclude: `"R-H"` = read-only AND not hidden. Combine: `"RHS"` = read-only, hidden, and system. |
-| `include_size` | boolean | ❌ | false | Include file size in results. |
-| `include_date_modified` | boolean | ❌ | false | Include last modified date (`dm`). |
-| `include_date_created` | boolean | ❌ | false | Include creation date (`dc`). |
-| `include_date_accessed` | boolean | ❌ | false | Include last accessed date (`da`). |
-| `include_path` | boolean | ❌ | false | Include the full path AND filename (es `-full-path-and-name`). |
-| `include_extension` | boolean | ❌ | false | Include file extension. |
-| `include_attributes` | boolean | ❌ | false | Include file attributes as DIR-style letters (`A`, `HS`, `HSD`, ...). |
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|:------:|------|
+| `query` | string | ✅ | — | Everything 搜索查询。支持通配符（`*`、`?`）、`content:`、`size:`、`dm:`、`dc:`、`da:`、`ext:`、`path:`、布尔运算符（`\|`、`!`、`<...>`）及 Everything 搜索语法。 |
+| `max_results` | number | ❌ | 50 | 最大返回结果数（1–100000）。需要穷举搜索时用 100000；一般建议用更窄的查询以保证速度。 |
+| `path` | string | ❌ | — | 限制搜索目录。含空格的路径可用（`C:\Program Files\MacType`）。通过 Everything 的 `path:` 函数实现，而非 es 的 `-path` 参数。 |
+| `regex` | boolean | ❌ | false | 启用正则搜索模式（`-r`）。注意：Everything 正则引擎**不支持 `(...)` 分组**——请用顶层交替，如 `.*\.pdf$\|.*\.txt$`。 |
+| `match_case` | boolean | ❌ | false | 区分大小写匹配（`-i`）。默认不区分。 |
+| `match_whole_word` | boolean | ❌ | false | 仅匹配完整单词（`-w`）。 |
+| `match_path` | boolean | ❌ | false | 匹配完整路径（`-p`）。 |
+| `file_only` | boolean | ❌ | false | 仅搜索文件，排除文件夹（`/a-d`）。 |
+| `folder_only` | boolean | ❌ | false | 仅搜索文件夹，排除文件（`/ad`）。 |
+| `sort_by` | string | ❌ | — | 排序字段：`name`、`path`、`size`、`extension`、`date-created`、`date-modified`、`date-accessed`。 |
+| `sort_desc` | boolean | ❌ | false | 设置 `sort_by` 后降序排序。 |
+| `attributes` | string | ❌ | — | 属性过滤器，DIR 风格。字母含义：`R` 只读、`H` 隐藏、`S` 系统、`D` 目录、`A` 归档、`V` 设备、`N` 普通、`T` 临时、`L` 重解析点、`C` 压缩、`O` 离线、`I` 未索引内容、`E` 加密。前缀 `-` 表示排除：`"R-H"` = 只读且非隐藏。组合：`"RHS"` = 只读、隐藏且系统。 |
+| `include_size` | boolean | ❌ | false | 显示文件大小。 |
+| `include_date_modified` | boolean | ❌ | false | 显示最后修改日期（`dm`）。 |
+| `include_date_created` | boolean | ❌ | false | 显示创建日期（`dc`）。 |
+| `include_date_accessed` | boolean | ❌ | false | 显示最后访问日期（`da`）。 |
+| `include_path` | boolean | ❌ | false | 显示完整路径**和**文件名（es `-full-path-and-name`）。 |
+| `include_extension` | boolean | ❌ | false | 显示文件扩展名。 |
+| `include_attributes` | boolean | ❌ | false | 显示文件属性，DIR 风格字母（`A`、`HS`、`HSD` 等）。 |
 
-## Config
+## 配置
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `timeoutMs` | `1200000` | Cooperative tool-call timeout budget (ms). |
-| `graceMs` | `3000` | Process termination grace period past timeout (ms). |
-| `stderrMaxBytes` | `65536` | Stderr diagnostic tail budget (bytes). |
-| `rawOutputMaxBytes` | `20000000` | Max stdout captured for parsing (bytes). |
+| 键 | 默认值 | 说明 |
+|-----|:------:|------|
+| `timeoutMs` | `1200000` | 工具调用的超时时间（毫秒）。 |
+| `graceMs` | `3000` | 超时后的进程终止宽限期（毫秒）。 |
+| `stderrMaxBytes` | `65536` | 错误输出诊断截取上限（字节）。 |
+| `rawOutputMaxBytes` | `20000000` | 标准输出解析上限（字节）。 |
 
-## How it works
+## 工作原理
 
-1. The model calls `everything_search` with a query and optional parameters.
-2. The plugin spawns `cmd /c chcp 65001>nul & es -json ...` through the DSH subprocess seam.
-3. `es.exe` queries the Everything service (which has indexed all NTFS volumes) and returns JSON results.
-4. The plugin parses the JSON, converts FILETIME dates and attribute bitmasks, formats results, and returns them to the model.
+1. 模型调用 `everything_search`，传入查询和可选参数。
+2. 插件通过 DSH 子进程接口执行 `cmd /c chcp 65001>nul & es -json ...`。
+3. `es.exe` 查询 Everything 服务（已索引所有 NTFS 卷），返回 JSON 格式结果。
+4. 插件解析 JSON，转换 FILETIME 日期和属性位掩码，格式化结果并返回给模型。
 
-### Why `cmd /c chcp 65001`?
+### 为什么用 `cmd /c chcp 65001`？
 
-On Chinese Windows (and other CJK locales), `es.exe` writes filenames in the system ANSI code page (GB2312/CP936), but the harness subprocess seam decodes child stdout as UTF-8 — garbling every non-ASCII path. `chcp 65001` switches the console code page to UTF-8 before `es` runs, so es emits UTF-8 bytes that decode correctly. This is verified end-to-end: without it, `D:\驱动镜像` becomes `D:\������`.
+在中文 Windows（及其他 CJK 区域）上，`es.exe` 按系统 ANSI 代码页（GB2312/CP936）输出文件名，而 DSH 子进程接口按 UTF-8 解码子进程 stdout——所有非 ASCII 路径都会乱码。`chcp 65001` 在 es 运行前把控制台代码页切到 UTF-8，es 输出 UTF-8 字节即可正确解码。已端到端验证：不加它时，`D:\驱动镜像` 会变成 `D:\`。
 
-### Escaping strategy
+### 转义策略
 
-The query is embedded in one joined `cmd /c` string, with every shell-special character (including SPACE) escaped by caret (`^`), cmd's escape character:
+查询被嵌入到一条 `cmd /c` 命令字符串中，所有 shell 特殊字符（**包括空格**）都用 caret（`^`，cmd 的转义符）转义：
 
-- `size:>1gb` → `size:^>1gb` (not a redirection)
-- `*.pdf | *.txt` → `*.pdf^ ^|^ *.txt` (one OR search, not a pipe)
-- `Windows11 25H2.iso` → `Windows11^ 25H2.iso` (one multi-word query)
+- `size:>1gb` → `size:^>1gb`（不会被当作重定向）
+- `*.pdf | *.txt` → `*.pdf^ ^|^ *.txt`（保持一次 OR 搜索，不是管道）
+- `Windows11 25H2.iso` → `Windows11^ 25H2.iso`（保持多词查询）
 
-Quotes are NEVER used for the query: es passes them through to Everything, where `"..."` means a literal-phrase search and silently returns zero results.
+查询**绝不用引号**：es 会把引号原样传给 Everything，其中 `"..."` 表示精确短语搜索，会静默返回 0 结果。
 
-The `path` argument is folded into the query as Everything's `path:` function prefix (`path:C:\Program^ Files\MacType *.ini`). This deliberately avoids es's `-path` flag: a `-path` value containing spaces needs quotes, and Node.js's Windows command-line quoting mangles quotes inside a joined `cmd /c` string (`\"`), breaking cmd. The `path:` function handles space-containing paths correctly after caret-escaping.
+`path` 参数被折叠进查询作为 Everything 的 `path:` 函数前缀（`path:C:\Program^ Files\MacType *.ini`）。这刻意避开了 es 的 `-path` 参数：含空格的 `-path` 值需要引号，而 Node.js 在 Windows 上的命令行引号处理会破坏拼接在 `cmd /c` 字符串内的引号（`\"`），导致 cmd 解析失败。`path:` 函数在 caret 转义后能正确处理含空格的路径。
 
-### es argument order matters
+### es 参数顺序很关键
 
-es parses options strictly left-to-right and is **greedy** about its search-mode switches: `-r` (regex) and `-i`/`-w`/`-p` (case/whole-word/match-path) must be the LAST options, immediately before the query. Any option that follows them (`-size`, `-n`, `-sort`) is consumed as part of the search text and silently returns zero results. The plugin therefore emits columns → `-n` → filters → sort → `-i -w -p` → `-r` → query.
+es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的：`-r`（正则）和 `-i`/`-w`/`-p`（大小写/全词/匹配路径）必须是**最后一个选项**，紧跟查询之前。任何出现在它们之后的选项（`-size`、`-n`、`-sort`）都会被当作搜索文本的一部分，静默返回 0 结果。因此插件按 显示列 → `-n` → 过滤 → 排序 → `-i -w -p` → `-r` → 查询 的顺序构造命令。
 
-### Output quirks handled
+### 已处理的输出怪癖
 
-- `-size` combined with `-r` makes es wrap its JSON in an extra array level (`[[{...}]]`); the parser unwraps one level.
-- `-attribs` emits a numeric bitmask (32 = Archive); the plugin converts it to DIR-style letters (`A`, `HS`, `HSD`, ...).
-- FILETIME dates (100-ns intervals since 1601) are converted to ISO-8601.
+- `-size` 与 `-r` 组合时，es 会把 JSON 多包一层数组（`[[{...}]]`）；解析器会解开一层。
+- `-attribs` 输出数字位掩码（32 = 归档）；插件会转换为 DIR 风格字母（`A`、`HS`、`HSD` 等）。
+- FILETIME 日期（自 1601 年起 100 纳秒间隔）会转换为 ISO-8601 格式。
 
-Because Everything maintains a real-time index, searches are **near-instant** even across millions of files — much faster than filesystem `glob` or `grep` for broad searches.
+由于 Everything 维护实时索引，即使跨数百万个文件，搜索也**近乎即时**——对于大范围搜索，比文件系统的 `glob` 或 `grep` 快得多。
 
-## Errors
+## 错误码
 
-| Error Code | Description |
-|------------|-------------|
-| `ES_NOT_FOUND` | The `cmd` or `es` command is not installed or not on PATH. |
-| `ES_FAILED` | The command failed (non-zero exit, launch failure, malformed output). |
-| `ES_RAW_OUTPUT_OVERFLOW` | The output exceeded the capture budget; narrow the query. |
-| `ES_ABORTED` | The tool call was aborted (timeout or cancellation). |
+| 错误码 | 说明 |
+|--------|------|
+| `ES_NOT_FOUND` | `cmd` 或 `es` 命令未安装或不在 PATH 中。 |
+| `ES_FAILED` | 命令执行失败（非零退出码、启动失败、输出格式错误）。 |
+| `ES_RAW_OUTPUT_OVERFLOW` | 输出超出捕获上限；请缩小查询范围。 |
+| `ES_ABORTED` | 工具调用被中止（超时或取消）。 |
 
-## Known Limitations
+## 已知限制
 
-- **Everything's regex engine does not support `(...)` grouping** — `.*\.(pdf|txt)$` returns nothing; use `.*\.pdf$|.*\.txt$` instead.
-- **`es` must be on `PATH`**; the plugin does not probe for a fixed install path.
-- A `path` value containing BOTH spaces and `&|<>^()` shell characters may not be passed exactly; such directory names are extremely rare on Windows.
+- **Everything 正则引擎不支持 `(...)` 分组**——`.*\.(pdf|txt)$` 返回空；请用 `.*\.pdf$|.*\.txt$`。
+- **`es` 必须在 `PATH` 中**；插件不探测固定安装路径。
+- `path` 值同时包含空格和 `&|<>^()` 等 shell 字符时可能无法精确传递；此类目录名在 Windows 上极为罕见。
 
-## License
+## 许可证
 
 MIT
