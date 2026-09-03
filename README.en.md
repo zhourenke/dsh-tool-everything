@@ -1,6 +1,6 @@
-# @zhourenke/dsh-tool-everything
+**English** | [中文](README.md)
 
-English | [中文](README.md)
+# @zhourenke/dsh-tool-everything
 
 **Model-facing Everything search tool** — `everything_search` — powered by **es.exe** (Everything command-line client) for blazing-fast file search on Windows.
 

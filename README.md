@@ -1,6 +1,6 @@
-# @zhourenke/dsh-tool-everything
+[English](README.en.md) | **中文**
 
-[English](README.en.md) | 中文
+# @zhourenke/dsh-tool-everything
 
 **模型可调用的 Everything 搜索工具** — `everything_search` — 基于 **es.exe**（Everything 命令行客户端），在 Windows 上实现极速文件搜索。
 
