@@ -184,9 +184,9 @@ Because Everything maintains a real-time index, searches are **near-instant** ev
 `content:` reads file content through system iFilters, which can freeze Everything while scanning millions of files. The plugin enforces two safeguards:
 
 - **No path → rejected**: `content:` without a `path` parameter (or inline `path:` in the query) is rejected with `ES_FAILED` and a message asking for a narrower scope.
-- **Broad path → auto-restricted**: `content:` targeting a drive root (e.g. `C:\`), the Users tree (`C:\Users`, `C:\Users\AnyUser`), or the current home directory is restricted to immediate children only (one level, no subdirectories). A warning is shown in the results.
+- **Broad path → auto-restricted**: `content:` targeting a drive root (e.g. `C:\`), the Users tree (`C:\Users`, `C:\Users\AnyUser`), the current home directory, or any of these with wildcard suffixes (e.g. `C:\*`), is restricted to immediate children only via Everything's `parent:` function (one level, no recursion into subdirectories). A warning is shown in the results.
 
-Always specify a concrete path such as `path:C:\Specific\Folder` when searching file contents.
+Always specify a concrete path such as `path:C:\Specific\Folder` when searching file contents. Wildcard patterns like `C:\*` are also considered broad and will be restricted.
 
 ## Errors
 
