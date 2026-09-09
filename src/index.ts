@@ -79,6 +79,38 @@ const COLUMN_FLAGS: Record<string, string> = {
 }
 
 // ---------------------------------------------------------------------------
+// Content search safety
+// ---------------------------------------------------------------------------
+
+/** Check whether the query contains a content: search. */
+function isContentSearch(query: string): boolean {
+  return /\bcontent:/i.test(query)
+}
+
+/** Detect paths that are too broad for content searches (drive roots, user home). */
+function isBroadPath(path: string): boolean {
+  const normalized = path.replace(/[\\/]+$/, '')
+  if (/^[A-Za-z]:\\?$/.test(normalized)) return true
+  const userHome =
+    typeof process !== 'undefined'
+      ? process.env.USERPROFILE || process.env.HOME
+      : undefined
+  if (userHome && normalized.toLowerCase() === userHome.toLowerCase()) return true
+  return false
+}
+
+/** Restrict a path to immediate children only (one depth level). */
+function restrictToImmediateDir(path: string): string {
+  return path.replace(/[\\/]+$/, '') + '\\*'
+}
+
+/** Extract a `path:` value from the query string when inlined by the model. */
+function extractInlinePath(query: string): string | undefined {
+  const m = query.match(/\bpath:(\S+?)(?:\s|$)/i)
+  return m ? m[1] : undefined
+}
+
+// ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
 
@@ -97,6 +129,8 @@ interface EverythingInput {
   path?: string
   attributes?: string
   columns: string[]
+  /** @internal Set by buildEsCommand when content search was auto-restricted. */
+  _contentSearchRestricted?: boolean
 }
 
 function parseEverythingArgs(args: Record<string, unknown>): EverythingInput {
@@ -225,7 +259,22 @@ function buildEsCommand(input: EverythingInput): string[] {
   //    function prefix so space-containing paths need no quotes.
   let query = input.query
   if (input.path !== undefined) {
-    query = `path:${input.path} ${query}`
+    if (isContentSearch(query) && isBroadPath(input.path)) {
+      query = `path:${restrictToImmediateDir(input.path)} ${query}`
+      input._contentSearchRestricted = true
+    } else {
+      query = `path:${input.path} ${query}`
+    }
+  } else {
+    // Check the query string itself for an inline path: function
+    const inlinePath = extractInlinePath(query)
+    if (inlinePath && isBroadPath(inlinePath) && isContentSearch(query)) {
+      query = query.replace(
+        /\bpath:(\S+?)(?:\s|$)/i,
+        (_, p: string) => `path:${restrictToImmediateDir(p)} `,
+      )
+      input._contentSearchRestricted = true
+    }
   }
 
   // The query may contain cmd special characters (e.g. > in size:>1gb, |
@@ -570,7 +619,14 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
         'It queries the Everything search engine (via es.exe) and supports the full Everything search syntax: ' +
         'wildcards (*, ?), boolean operators (|, !, <...>), content: (file content), size: (file size), ' +
         'dm: (date modified), dc: (date created), da: (date accessed), ext: (extension), ' +
-        'path: (path), and more. Results are returned as a numbered list with file paths and optional metadata.',
+        'path: (path), and more. Results are returned as a numbered list with file paths and optional metadata.\n\n' +
+        '⚠️ When using content: to search file contents, avoid very broad paths (drive roots like C:\\ ' +
+        'or user home directories). Scanning file contents across root/user directories forces the ' +
+        'Everything engine to read millions of files through system iFilters, causing the program to freeze. ' +
+        'If you must search file contents, always narrow the scope with a specific path or combine content: ' +
+        'with ext: or other filters. The plugin automatically restricts content: searches on root/user ' +
+        'directories to immediate files only (no recursion into subdirectories) and returns a warning. ' +
+        'Use a narrower path for recursive content searches.',
     })
   }
 
@@ -695,6 +751,9 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
             type: 'string',
             required: true,
           },
+          warning: {
+            type: 'string',
+          },
           results: {
             type: 'array',
             required: true,
@@ -720,11 +779,21 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
           truncated: boolean
           query: string
           results: Array<Record<string, unknown>>
+          warning?: string
         }
-        if (v.total === 0) {
+        if (v.total === 0 && !v.warning) {
           return [{ type: 'text' as const, text: 'No files found' }]
         }
-        const header = `Found ${v.total} result${v.total === 1 ? '' : 's'} for "${v.query}"${v.truncated ? ` (showing first ${v.results.length})` : ''}`
+        let header = ''
+        if (v.total > 0) {
+          header = `Found ${v.total} result${v.total === 1 ? '' : 's'} for "${v.query}"${v.truncated ? ` (showing first ${v.results.length})` : ''}`
+        }
+        if (v.warning) {
+          header = `${header}\n\n⚠️ ${v.warning}`
+        }
+        if (v.total === 0) {
+          return [{ type: 'text' as const, text: header || 'No files found' }]
+        }
         const lines = v.results.map((r, i) => {
           const filepath = String(r.path ?? '(unknown)')
           const meta: string[] = []
@@ -759,6 +828,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
       exec: { signal: AbortSignal; agent?: { session?: { header?: { cwd?: string } } } },
     ) {
       const input = parseEverythingArgs(args)
+      input._contentSearchRestricted = false
       const argv = buildEsCommand(input)
 
       const run = await runEs(
@@ -772,7 +842,13 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
       )
 
       if (run.noMatches) {
-        return { total: 0, truncated: false, query: input.query, results: [] }
+        const result: Record<string, unknown> = {
+          total: 0, truncated: false, query: input.query, results: [],
+        }
+        if (input._contentSearchRestricted) {
+          result.warning = 'Content search on a root directory or user home has been restricted to files directly in that directory only (no subdirectories), to prevent the Everything engine from freezing. Use a narrower path (e.g. path:C:\\Specific\\Folder) for recursive content search.'
+        }
+        return result
       }
 
       const entries = parseEsOutput(run.stdout)
@@ -798,12 +874,16 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
       const truncated = results.length > input.maxResults
       const capped = results.slice(0, input.maxResults)
 
-      return {
+      const result: Record<string, unknown> = {
         total: results.length,
         truncated,
         query: input.query,
         results: capped,
       }
+      if (input._contentSearchRestricted) {
+        result.warning = 'Content search on a root directory or user home has been restricted to files directly in that directory only (no subdirectories), to prevent the Everything engine from freezing. Use a narrower path (e.g. path:C:\\Specific\\Folder) for recursive content search.'
+      }
+      return result
     },
   })
 
