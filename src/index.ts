@@ -89,19 +89,23 @@ function isContentSearch(query: string): boolean {
 
 /** Detect paths that are too broad for content searches (drive roots, Users tree). */
 function isBroadPath(path: string): boolean {
-  const normalized = path.replace(/[\\/]+$/, '')
+  if (!path) return false
+  // Strip trailing slashes AND wildcard suffixes before checking.
+  // The model may write path:C:\* which is semantically the same as path:C:\
+  let n = path.replace(/[\\/]+$/, '')
+  n = n.replace(/(?:\\[*?])+$/, '')
   // Drive root: C:\, D:\
-  if (/^[A-Za-z]:\\?$/.test(normalized)) return true
+  if (/^[A-Za-z]:\\?$/.test(n)) return true
   // Entire Users tree: C:\Users, C:\Users\AnyUser
-  if (/^[A-Za-z]:\\Users(\\[^\\]+)?$/i.test(normalized)) return true
+  if (/^[A-Za-z]:\\Users(\\[^\\]+)?$/i.test(n)) return true
   // Legacy profile container
-  if (/^[A-Za-z]:\\Documents and Settings(\\[^\\]+)?$/i.test(normalized)) return true
+  if (/^[A-Za-z]:\\Documents and Settings(\\[^\\]+)?$/i.test(n)) return true
   // Current user home
   const userHome =
     typeof process !== 'undefined'
       ? process.env.USERPROFILE || process.env.HOME
       : undefined
-  if (userHome && normalized.toLowerCase() === userHome.toLowerCase()) return true
+  if (userHome && n.toLowerCase() === userHome.toLowerCase()) return true
   return false
 }
 
