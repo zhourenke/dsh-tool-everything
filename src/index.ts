@@ -137,6 +137,8 @@ interface EverythingInput {
   columns: string[]
   /** @internal Set by buildEsCommand when content search was auto-restricted. */
   _contentSearchRestricted?: boolean
+  /** @internal Set by buildEsCommand when content search requires an explicit path. */
+  _contentSearchRejected?: boolean
 }
 
 function parseEverythingArgs(args: Record<string, unknown>): EverythingInput {
@@ -281,10 +283,10 @@ function buildEsCommand(input: EverythingInput): string[] {
       )
       input._contentSearchRestricted = true
     } else if (isContentSearch(query)) {
-      // No path at all — restrict to C:\* (immediate children of C:\ only)
-      // to prevent Everything from scanning every file on every drive.
-      query = `path:C:\\* ${query}`
-      input._contentSearchRestricted = true
+      // No path at all — content search would scan every file on every
+      // drive through system iFilters, freezing Everything.  Reject with
+      // a clear error so the model learns to supply a path parameter.
+      input._contentSearchRejected = true
     }
   }
 
@@ -631,14 +633,13 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
         'wildcards (*, ?), boolean operators (|, !, <...>), content: (file content), size: (file size), ' +
         'dm: (date modified), dc: (date created), da: (date accessed), ext: (extension), ' +
         'path: (path), and more. Results are returned as a numbered list with file paths and optional metadata.\n\n' +
-        '⚠️ When using content: to search file contents, avoid very broad paths (drive roots like C:\\, ' +
-        'the entire Users tree, user home directories, or no path at all). Scanning file contents across ' +
-        'broad scopes forces the Everything engine to read millions of files through system iFilters, ' +
-        'causing the program to freeze. If you must search file contents, always narrow the scope with a ' +
-        'specific path (e.g. path:C:\\Specific\\Folder) or combine content: with ext: or other filters. ' +
-        'The plugin automatically restricts content: searches on broad paths to immediate files only ' +
-        '(no recursion into subdirectories) and returns a warning. Use a narrower path for recursive ' +
-        'content searches.',
+        '⚠️ When using content: to search file contents, you MUST provide a path parameter ' +
+        '(or include path: in the query) to narrow the search scope. Scanning file contents ' +
+        'without a path, or across broad paths (drive roots like C:\\, the entire Users tree, ' +
+        'user home directories) forces the Everything engine to read millions of files through ' +
+        'system iFilters, causing the program to freeze. Without an explicit path the plugin ' +
+        'rejects the search with an error. Broad paths are automatically restricted to ' +
+        'immediate files only.',
     })
   }
 
@@ -841,7 +842,19 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
     ) {
       const input = parseEverythingArgs(args)
       input._contentSearchRestricted = false
+      input._contentSearchRejected = false
       const argv = buildEsCommand(input)
+
+      // Reject content: searches with no path — attempting them would
+      // freeze Everything while it reads every file on every drive.
+      if (input._contentSearchRejected) {
+        throw new EverythingError(
+          'Content search requires an explicit path to prevent the Everything engine from freezing. ' +
+          'Use the path parameter to narrow the scope (e.g. path: "C:\\Specific\\Folder") ' +
+          'or add path:C:\\Specific\\Folder to your query.',
+          'ES_FAILED',
+        )
+      }
 
       const run = await runEs(
         ctx,
@@ -858,7 +871,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
           total: 0, truncated: false, query: input.query, results: [],
         }
         if (input._contentSearchRestricted) {
-          result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) to prevent the Everything engine from freezing: the original path was too broad (drive root, Users tree, or no path at all). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
+          result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
         }
         return result
       }
@@ -893,7 +906,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
         results: capped,
       }
       if (input._contentSearchRestricted) {
-        result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) to prevent the Everything engine from freezing: the original path was too broad (drive root, Users tree, or no path at all). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
+        result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
       }
       return result
     },
