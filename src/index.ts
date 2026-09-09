@@ -628,18 +628,12 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
       name: 'tool:everything_search',
       order: 106,
       text:
-        'Use the everything_search tool — not glob or grep — for blazing-fast file search on Windows. ' +
-        'It queries the Everything search engine (via es.exe) and supports the full Everything search syntax: ' +
-        'wildcards (*, ?), boolean operators (|, !, <...>), content: (file content), size: (file size), ' +
-        'dm: (date modified), dc: (date created), da: (date accessed), ext: (extension), ' +
-        'path: (path), and more. Results are returned as a numbered list with file paths and optional metadata.\n\n' +
-        '⚠️ When using content: to search file contents, you MUST provide a path parameter ' +
-        '(or include path: in the query) to narrow the search scope. Scanning file contents ' +
-        'without a path, or across broad paths (drive roots like C:\\, the entire Users tree, ' +
-        'user home directories) forces the Everything engine to read millions of files through ' +
-        'system iFilters, causing the program to freeze. Without an explicit path the plugin ' +
-        'rejects the search with an error. Broad paths are automatically restricted to ' +
-        'immediate files only.',
+        'everything_search: Windows file search via Everything engine (es.exe). Supports full Everything syntax — ' +
+        'wildcards (* ?), boolean operators (| ! <...>), functions (content:, size:, dm:, dc:, da:, ext:, path:). ' +
+        'Returns numbered results with optional metadata.\n\n' +
+        '⚠️ content: requires a path parameter. Without one the search freezes Everything (scans every file ' +
+        'via system iFilters) and the plugin rejects it with an error. Broad paths (drive root, Users tree, ' +
+        'user home) auto-restrict to immediate children only — use a narrower path for recursive content search.',
     })
   }
 
