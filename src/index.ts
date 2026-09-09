@@ -274,6 +274,16 @@ function buildEsCommand(input: EverythingInput): string[] {
         (_, p: string) => `path:${restrictToImmediateDir(p)} `,
       )
       input._contentSearchRestricted = true
+    } else if (isContentSearch(query)) {
+      // No path at all — default to user home (immediate children only)
+      // to prevent Everything from scanning every file on every drive.
+      const userHome = typeof process !== 'undefined'
+        ? process.env.USERPROFILE || process.env.HOME
+        : undefined
+      if (userHome) {
+        query = `path:${restrictToImmediateDir(userHome)} ${query}`
+        input._contentSearchRestricted = true
+      }
     }
   }
 
@@ -846,7 +856,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
           total: 0, truncated: false, query: input.query, results: [],
         }
         if (input._contentSearchRestricted) {
-          result.warning = 'Content search on a root directory or user home has been restricted to files directly in that directory only (no subdirectories), to prevent the Everything engine from freezing. Use a narrower path (e.g. path:C:\\Specific\\Folder) for recursive content search.'
+          result.warning = 'Content search without a narrow path has been restricted to the user profile directory (immediate files only, no subdirectories) to prevent the Everything engine from freezing. Provide an explicit path parameter (e.g. path:C:\\Specific\\Folder) or add path:C:\\Specific\\Folder to your query for recursive content searches.'
         }
         return result
       }
@@ -881,7 +891,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
         results: capped,
       }
       if (input._contentSearchRestricted) {
-        result.warning = 'Content search on a root directory or user home has been restricted to files directly in that directory only (no subdirectories), to prevent the Everything engine from freezing. Use a narrower path (e.g. path:C:\\Specific\\Folder) for recursive content search.'
+        result.warning = 'Content search without a narrow path has been restricted to the user profile directory (immediate files only, no subdirectories) to prevent the Everything engine from freezing. Provide an explicit path parameter (e.g. path:C:\\Specific\\Folder) or add path:C:\\Specific\\Folder to your query for recursive content searches.'
       }
       return result
     },
