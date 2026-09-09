@@ -87,10 +87,16 @@ function isContentSearch(query: string): boolean {
   return /\bcontent:/i.test(query)
 }
 
-/** Detect paths that are too broad for content searches (drive roots, user home). */
+/** Detect paths that are too broad for content searches (drive roots, Users tree). */
 function isBroadPath(path: string): boolean {
   const normalized = path.replace(/[\\/]+$/, '')
+  // Drive root: C:\, D:\
   if (/^[A-Za-z]:\\?$/.test(normalized)) return true
+  // Entire Users tree: C:\Users, C:\Users\AnyUser
+  if (/^[A-Za-z]:\\Users(\\[^\\]+)?$/i.test(normalized)) return true
+  // Legacy profile container
+  if (/^[A-Za-z]:\\Documents and Settings(\\[^\\]+)?$/i.test(normalized)) return true
+  // Current user home
   const userHome =
     typeof process !== 'undefined'
       ? process.env.USERPROFILE || process.env.HOME
@@ -275,15 +281,10 @@ function buildEsCommand(input: EverythingInput): string[] {
       )
       input._contentSearchRestricted = true
     } else if (isContentSearch(query)) {
-      // No path at all — default to user home (immediate children only)
+      // No path at all — restrict to C:\* (immediate children of C:\ only)
       // to prevent Everything from scanning every file on every drive.
-      const userHome = typeof process !== 'undefined'
-        ? process.env.USERPROFILE || process.env.HOME
-        : undefined
-      if (userHome) {
-        query = `path:${restrictToImmediateDir(userHome)} ${query}`
-        input._contentSearchRestricted = true
-      }
+      query = `path:C:\\* ${query}`
+      input._contentSearchRestricted = true
     }
   }
 
@@ -630,13 +631,14 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
         'wildcards (*, ?), boolean operators (|, !, <...>), content: (file content), size: (file size), ' +
         'dm: (date modified), dc: (date created), da: (date accessed), ext: (extension), ' +
         'path: (path), and more. Results are returned as a numbered list with file paths and optional metadata.\n\n' +
-        '⚠️ When using content: to search file contents, avoid very broad paths (drive roots like C:\\ ' +
-        'or user home directories). Scanning file contents across root/user directories forces the ' +
-        'Everything engine to read millions of files through system iFilters, causing the program to freeze. ' +
-        'If you must search file contents, always narrow the scope with a specific path or combine content: ' +
-        'with ext: or other filters. The plugin automatically restricts content: searches on root/user ' +
-        'directories to immediate files only (no recursion into subdirectories) and returns a warning. ' +
-        'Use a narrower path for recursive content searches.',
+        '⚠️ When using content: to search file contents, avoid very broad paths (drive roots like C:\\, ' +
+        'the entire Users tree, user home directories, or no path at all). Scanning file contents across ' +
+        'broad scopes forces the Everything engine to read millions of files through system iFilters, ' +
+        'causing the program to freeze. If you must search file contents, always narrow the scope with a ' +
+        'specific path (e.g. path:C:\\Specific\\Folder) or combine content: with ext: or other filters. ' +
+        'The plugin automatically restricts content: searches on broad paths to immediate files only ' +
+        '(no recursion into subdirectories) and returns a warning. Use a narrower path for recursive ' +
+        'content searches.',
     })
   }
 
@@ -856,7 +858,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
           total: 0, truncated: false, query: input.query, results: [],
         }
         if (input._contentSearchRestricted) {
-          result.warning = 'Content search without a narrow path has been restricted to the user profile directory (immediate files only, no subdirectories) to prevent the Everything engine from freezing. Provide an explicit path parameter (e.g. path:C:\\Specific\\Folder) or add path:C:\\Specific\\Folder to your query for recursive content searches.'
+          result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) to prevent the Everything engine from freezing: the original path was too broad (drive root, Users tree, or no path at all). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
         }
         return result
       }
@@ -891,7 +893,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
         results: capped,
       }
       if (input._contentSearchRestricted) {
-        result.warning = 'Content search without a narrow path has been restricted to the user profile directory (immediate files only, no subdirectories) to prevent the Everything engine from freezing. Provide an explicit path parameter (e.g. path:C:\\Specific\\Folder) or add path:C:\\Specific\\Folder to your query for recursive content searches.'
+        result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) to prevent the Everything engine from freezing: the original path was too broad (drive root, Users tree, or no path at all). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
       }
       return result
     },
