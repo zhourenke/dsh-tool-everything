@@ -117,7 +117,7 @@ Once installed, the model can call `everything_search` with any Everything searc
 |-----------|------|----------|---------|-------------|
 | `query` | string | ✅ | — | Everything search query. Supports wildcards (`*`, `?`), `content:`, `size:`, `dm:`, `dc:`, `da:`, `ext:`, `path:`, boolean operators (`\|`, `!`, `<...>`), and Everything search syntax. |
 | `max_results` | number | ❌ | 50 | Maximum results to return (1–100000). Use 100000 for exhaustive searches; prefer narrow queries for speed. |
-| `path` | string | ❌ | — | Restrict search to a directory. Space-containing paths work (`C:\Program Files\MacType`). Implemented via Everything's `path:` function, not es's `-path` flag. |
+| `path` | string | ❌ | — | Restrict search to a directory. Space-containing paths work (`C:\Program Files\MacType`). Implemented via Everything's `path:` function, not es's `-path` flag. **Required when using `content:`** — searches without a path are rejected to prevent the Everything engine from freezing. |
 | `regex` | boolean | ❌ | false | Enable regex search mode (`-r`). Note: Everything's regex engine does NOT support `(...)` grouping — use top-level alternation like `.*\.pdf$\|.*\.txt$`. |
 | `match_case` | boolean | ❌ | false | Case-sensitive matching (`-i`). Default is case-insensitive. |
 | `match_whole_word` | boolean | ❌ | false | Match whole words only (`-w`). |
@@ -179,12 +179,21 @@ es parses options strictly left-to-right and is **greedy** about its search-mode
 
 Because Everything maintains a real-time index, searches are **near-instant** even across millions of files — much faster than filesystem `glob` or `grep` for broad searches.
 
+### Content search safety guard
+
+`content:` reads file content through system iFilters, which can freeze Everything while scanning millions of files. The plugin enforces two safeguards:
+
+- **No path → rejected**: `content:` without a `path` parameter (or inline `path:` in the query) is rejected with `ES_FAILED` and a message asking for a narrower scope.
+- **Broad path → auto-restricted**: `content:` targeting a drive root (e.g. `C:\`), the Users tree (`C:\Users`, `C:\Users\AnyUser`), or the current home directory is restricted to immediate children only (one level, no subdirectories). A warning is shown in the results.
+
+Always specify a concrete path such as `path:C:\Specific\Folder` when searching file contents.
+
 ## Errors
 
 | Error Code | Description |
 |------------|-------------|
 | `ES_NOT_FOUND` | The `cmd` or `es` command is not installed or not on PATH. |
-| `ES_FAILED` | The command failed (non-zero exit, launch failure, malformed output). |
+| `ES_FAILED` | The command failed (non-zero exit, launch failure, malformed output). Content searches without a `path` parameter are also rejected as `ES_FAILED`. |
 | `ES_RAW_OUTPUT_OVERFLOW` | The output exceeded the capture budget; narrow the query. |
 | `ES_ABORTED` | The tool call was aborted (timeout or cancellation). |
 
@@ -193,6 +202,7 @@ Because Everything maintains a real-time index, searches are **near-instant** ev
 - **Everything's regex engine does not support `(...)` grouping** — `.*\.(pdf|txt)$` returns nothing; use `.*\.pdf$|.*\.txt$` instead.
 - **`es` must be on `PATH`**; the plugin does not probe for a fixed install path.
 - A `path` value containing BOTH spaces and `&|<>^()` shell characters may not be passed exactly; such directory names are extremely rare on Windows.
+- **`content:` requires a `path` parameter** — scanning file contents without a path, or across broad paths (drive roots, the Users tree, user home directories), forces Everything to read every file via system iFilters and freezes the program. The plugin rejects bare `content:` searches as `ES_FAILED` and auto-restricts broad paths to immediate children only.
 
 ## License
 

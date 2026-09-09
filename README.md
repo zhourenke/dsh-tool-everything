@@ -117,7 +117,7 @@ Copy-Item -Recurse C:\path\to\dsh-tool-everything "$target\"
 |------|------|:----:|:------:|------|
 | `query` | string | ✅ | — | Everything 搜索查询。支持通配符（`*`、`?`）、`content:`、`size:`、`dm:`、`dc:`、`da:`、`ext:`、`path:`、布尔运算符（`\|`、`!`、`<...>`）及 Everything 搜索语法。 |
 | `max_results` | number | ❌ | 50 | 最大返回结果数（1–100000）。需要穷举搜索时用 100000；一般建议用更窄的查询以保证速度。 |
-| `path` | string | ❌ | — | 限制搜索目录。含空格的路径可用（`C:\Program Files\MacType`）。通过 Everything 的 `path:` 函数实现，而非 es 的 `-path` 参数。 |
+| `path` | string | ❌ | — | 限制搜索目录。含空格的路径可用（`C:\Program Files\MacType`）。通过 Everything 的 `path:` 函数实现，而非 es 的 `-path` 参数。**使用 `content:` 时必须提供此参数**——无路径的 content 搜索会被拒绝，以防 Everything 引擎卡死。 |
 | `regex` | boolean | ❌ | false | 启用正则搜索模式（`-r`）。注意：Everything 正则引擎**不支持 `(...)` 分组**——请用顶层交替，如 `.*\.pdf$\|.*\.txt$`。 |
 | `match_case` | boolean | ❌ | false | 区分大小写匹配（`-i`）。默认不区分。 |
 | `match_whole_word` | boolean | ❌ | false | 仅匹配完整单词（`-w`）。 |
@@ -179,12 +179,21 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 由于 Everything 维护实时索引，即使跨数百万个文件，搜索也**近乎即时**——对于大范围搜索，比文件系统的 `glob` 或 `grep` 快得多。
 
+### Content 搜索安全保护
+
+`content:` 通过系统 iFilter 读取文件内容，在扫描数百万文件时会卡死 Everything。插件提供两层保护：
+
+- **无路径 → 拒绝**：`content:` 未附带 `path` 参数（或 query 中未包含 `path:`）时，插件拒绝搜索并返回 `ES_FAILED`，提示模型缩小范围。
+- **广域路径 → 自动限制**：`content:` 针对驱动器根目录（如 `C:\`）、Users 树（`C:\Users`、`C:\Users\任意用户名`）或当前用户主目录时，自动限制为仅搜索该目录的直接子级（一层深度，不递归子目录），并在结果中附加警告。
+
+使用 `content:` 时请务必指定具体路径，如 `path:C:\Specific\Folder`。
+
 ## 错误码
 
 | 错误码 | 说明 |
 |--------|------|
 | `ES_NOT_FOUND` | `cmd` 或 `es` 命令未安装或不在 PATH 中。 |
-| `ES_FAILED` | 命令执行失败（非零退出码、启动失败、输出格式错误）。 |
+| `ES_FAILED` | 命令执行失败（非零退出码、启动失败、输出格式错误）。未提供 `path` 参数的 content 搜索也会被拒绝，返回此错误码。 |
 | `ES_RAW_OUTPUT_OVERFLOW` | 输出超出捕获上限；请缩小查询范围。 |
 | `ES_ABORTED` | 工具调用被中止（超时或取消）。 |
 
@@ -193,6 +202,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **Everything 正则引擎不支持 `(...)` 分组**——`.*\.(pdf|txt)$` 返回空；请用 `.*\.pdf$|.*\.txt$`。
 - **`es` 必须在 `PATH` 中**；插件不探测固定安装路径。
 - `path` 值同时包含空格和 `&|<>^()` 等 shell 字符时可能无法精确传递；此类目录名在 Windows 上极为罕见。
+- **`content:` 必须搭配 `path` 参数使用**——无路径的 content 搜索（或在驱动器根目录、Users 树、用户主目录等广域路径上搜索）会让 Everything 通过系统 iFilter 读取每个文件，导致程序卡死。插件会拒绝裸 `content:` 搜索（返回 `ES_FAILED`），并自动将广域路径限制为仅搜索直接子级。
 
 ## 许可证
 
