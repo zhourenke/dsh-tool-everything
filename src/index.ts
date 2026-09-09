@@ -105,9 +105,9 @@ function isBroadPath(path: string): boolean {
   return false
 }
 
-/** Restrict a path to immediate children only (one depth level). */
+/** Clean a path for use with Everything's `parent:` function (immediate children). */
 function restrictToImmediateDir(path: string): string {
-  return path.replace(/[\\/]+$/, '') + '\\*'
+  return path.replace(/[\\/]+$/, '')
 }
 
 /** Extract a `path:` value from the query string when inlined by the model. */
@@ -268,7 +268,7 @@ function buildEsCommand(input: EverythingInput): string[] {
   let query = input.query
   if (input.path !== undefined) {
     if (isContentSearch(query) && isBroadPath(input.path)) {
-      query = `path:${restrictToImmediateDir(input.path)} ${query}`
+      query = `parent:${restrictToImmediateDir(input.path)} ${query}`
       input._contentSearchRestricted = true
     } else {
       query = `path:${input.path} ${query}`
@@ -276,12 +276,15 @@ function buildEsCommand(input: EverythingInput): string[] {
   } else {
     // Check the query string itself for an inline path: function
     const inlinePath = extractInlinePath(query)
-    if (inlinePath && isBroadPath(inlinePath) && isContentSearch(query)) {
-      query = query.replace(
-        /\bpath:(\S+?)(?:\s|$)/i,
-        (_, p: string) => `path:${restrictToImmediateDir(p)} `,
-      )
-      input._contentSearchRestricted = true
+    if (inlinePath) {
+      if (isBroadPath(inlinePath) && isContentSearch(query)) {
+        query = query.replace(
+          /\bpath:(\S+?)(?:\s|$)/i,
+          (_, p: string) => `parent:${restrictToImmediateDir(p)} `,
+        )
+        input._contentSearchRestricted = true
+      }
+      // inline path present and not broad → pass through normally
     } else if (isContentSearch(query)) {
       // No path at all — content search would scan every file on every
       // drive through system iFilters, freezing Everything.  Reject with
@@ -865,7 +868,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
           total: 0, truncated: false, query: input.query, results: [],
         }
         if (input._contentSearchRestricted) {
-          result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
+          result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) via the parent: function, to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
         }
         return result
       }
@@ -900,7 +903,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
         results: capped,
       }
       if (input._contentSearchRestricted) {
-        result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
+        result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) via the parent: function, to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
       }
       return result
     },
