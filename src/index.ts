@@ -455,7 +455,7 @@ function parseEsOutput(stdout: string): EsResultEntry[] {
  * Run the `es` command with the given argv and return its complete stdout.
  */
 async function runEs(
-  ctx: Record<string, unknown>,
+  ctx: any,
   exec: { signal: AbortSignal; agent?: { session?: { header?: { cwd?: string } } } },
   toolName: string,
   argv: string[],
@@ -470,19 +470,11 @@ async function runEs(
     )
   }
 
-  const subprocess = (ctx as { subprocess?: { spawn: Function } }).subprocess
-  if (subprocess === undefined) {
-    throw new EverythingError(
-      `${toolName} requires the subprocess service, which is not available`,
-      'ES_FAILED',
-    )
-  }
-
   const workdir = exec.agent?.session?.header?.cwd ?? process.cwd()
   let handle: { done: Promise<unknown>; collected: { stdout?: { readFrom: Function }; stderr?: { readFrom: Function } } }
 
   try {
-    handle = subprocess.spawn({
+    handle = ctx.subprocess.spawn({
       argv,
       cwd: workdir,
       stdio: {
@@ -619,30 +611,79 @@ interface EverythingSearchMeta {
 }
 
 // ---------------------------------------------------------------------------
+// Tool presentation (modern presentCall/presentResult pattern)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tool-call card showing what the model searched for.
+ * Returns a generic search card.
+ */
+function everythingSearchPresentCall(args: Record<string, unknown>): {
+  card: 'generic'
+  title: string
+  kind: 'search'
+  rawInput: string
+} {
+  const query = String(args.query ?? '')
+  const where = args.path !== undefined ? ` in ${String(args.path)}` : ''
+  return {
+    card: 'generic',
+    title: `Everything search: ${query}${where}`,
+    kind: 'search',
+    rawInput: query,
+  }
+}
+
+/**
+ * Completed-result card showing the discovered paths in a structured search card.
+ * Falls back to generic when the result is an error or has no meta.
+ */
+function everythingSearchPresentResult(
+  _args: Record<string, unknown>,
+  result: any,
+): undefined | {
+  card: 'search'
+  shape: 'paths'
+  title: string
+  paths: string[]
+  truncated: boolean
+  total: number
+} {
+  if (result.isError) return undefined
+  const meta = result.meta as { total: number; truncated: boolean; query: string; results: string[] } | undefined
+  if (meta === undefined) return undefined
+  return {
+    card: 'search',
+    shape: 'paths',
+    title: `Found ${meta.total} result${meta.total === 1 ? '' : 's'} for "${meta.query}"`,
+    paths: meta.results,
+    truncated: meta.truncated,
+    total: meta.total,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool definition
 // ---------------------------------------------------------------------------
 
-function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string, unknown>): void {
+function applyEverythingTool(ctx: any, config: any): void {
   const timeoutMs = Number(config.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   const graceMs = Number(config.graceMs ?? DEFAULT_GRACE_MS)
   const stderrMaxBytes = Number(config.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES)
   const rawOutputMaxBytes = Number(config.rawOutputMaxBytes ?? DEFAULT_RAW_OUTPUT_MAX_BYTES)
 
-  // Register system prompt guidance
-  const systemPrompt = (ctx as { systemPrompt?: { section: Function } }).systemPrompt
-  if (systemPrompt !== undefined) {
-    systemPrompt.section({
-      name: 'tool:everything_search',
-      order: 106,
-      text:
-        'everything_search: Windows file search via Everything engine (es.exe). Supports full Everything syntax — ' +
-        'wildcards (* ?), boolean operators (| ! <...>), functions (content:, size:, dm:, dc:, da:, ext:, path:). ' +
-        'Returns numbered results with optional metadata.\n\n' +
-        '⚠️ content: requires a path parameter. Without one the search freezes Everything (scans every file ' +
-        'via system iFilters) and the plugin rejects it with an error. Broad paths (drive root, Users tree, ' +
-        'user home) auto-restrict to immediate children only — use a narrower path for recursive content search.',
-    })
-  }
+  // Register system prompt guidance — inject guarantees systemPrompt is available
+  ctx.systemPrompt.section({
+    name: 'tool:everything_search',
+    order: 106,
+    text:
+      'everything_search: Windows file search via Everything engine (es.exe). Supports full Everything syntax — ' +
+      'wildcards (* ?), boolean operators (| ! <...>), functions (content:, size:, dm:, dc:, da:, ext:, path:). ' +
+      'Returns numbered results with optional metadata.\n\n' +
+      '⚠️ content: requires a path parameter. Without one the search freezes Everything (scans every file ' +
+      'via system iFilters) and the plugin rejects it with an error. Broad paths (drive root, Users tree, ' +
+      'user home) auto-restrict to immediate children only — use a narrower path for recursive content search.',
+  })
 
   const tool = defineTool({
     name: 'everything_search',
@@ -748,6 +789,8 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
       },
     },
     timeoutMs,
+    presentCall: everythingSearchPresentCall,
+    presentResult: everythingSearchPresentResult,
     output: {
       schema: {
         type: 'object',
@@ -910,11 +953,8 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
     },
   })
 
-  // Register the tool
-  const tools = (ctx as { tools?: { register: Function } }).tools
-  if (tools !== undefined) {
-    tools.register(tool)
-  }
+  // Register the tool — inject guarantees tools is available
+  ctx.tools.register(tool)
 }
 
 // ---------------------------------------------------------------------------
@@ -938,7 +978,7 @@ const Config = z.object({
 /**
  * Register the `everything_search` tool.
  */
-async function apply(ctx: Record<string, unknown>, config: Record<string, unknown>): Promise<void> {
+async function apply(ctx: any, config: any): Promise<void> {
   applyEverythingTool(ctx, config)
 }
 
