@@ -22,73 +22,17 @@ Should print the ES help text.
 
 ## Installation
 
-This plugin is a **DSH profile bundle**. Two installation methods are available:
+```powershell
+dsh plugin --profile web add "github:zhourenke/dsh-agent-rate-limit"
+```
 
-### Method 1: From GitHub (recommended)
+This installs the package from GitHub, detects the `dsh.bundle` declaration, and automatically registers it as a profile layer. Restart DSH to activate.
+
+To uninstall:
 
 ```powershell
-dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
+dsh plugin --profile web remove @zhourenke/dsh-agent-rate-limit
 ```
-
-This fetches the plugin from GitHub, installs it into the profile's `node_modules`, and registers it in `dsh.profile.bundles` automatically. Restart DSH afterwards.
-
-**Uninstall:**
-
-```powershell
-dsh plugin --profile web remove @zhourenke/dsh-tool-everything
-```
-
-This also removes the bundle entry from `dsh.profile.bundles` automatically.
-
-> This requires a DSH version that supports GitHub package installation. If it fails, use Method 2.
-
-### Method 2: Manual folder placement
-
-Place the package folder directly into a DSH profile's `node_modules` and register it manually.
-
-**Find your DSH profile**
-
-```powershell
-# List available profiles
-Get-ChildItem "$env:USERPROFILE\.dsh\profiles" -Name
-```
-
-Common profiles: `web`, `tui`, `headless`. The profile directory is `$env:USERPROFILE\.dsh\profiles\<name>\`.
-
-**Step 1 — Copy the package folder into the profile**
-
-```powershell
-# Create the scoped directory if it does not exist
-$target = "$env:USERPROFILE\.dsh\profiles\<name>\node_modules\@zhourenke"
-New-Item -ItemType Directory -Force $target
-
-# Copy the whole plugin folder (package.json, cordis.patch.yml, lib/, ...)
-Copy-Item -Recurse C:\path\to\dsh-tool-everything "$target\"
-```
-
-The copied tree must contain `package.json` (with `dsh.bundle.patch`), `cordis.patch.yml`, and `lib/`.
-
-**Step 2 — Register the bundle**
-
-Edit `$env:USERPROFILE\.dsh\profiles\<name>\package.json`:
-
-```diff
-  "dsh": {
-    "profile": {
-      "bundles": [
-        "@deepseek-ai/dsh-base",
-        "@deepseek-ai/dsh-web-app",
-+       "@zhourenke/dsh-tool-everything"
-      ]
-    }
-  }
-```
-
-No `dependencies` entry is needed — DSH resolves bundles purely by package name from the profile's `node_modules` at startup.
-
-**Step 3 — Restart DSH**
-
-The plugin is loaded on the next DSH startup.
 
 ### Verify the installation
 

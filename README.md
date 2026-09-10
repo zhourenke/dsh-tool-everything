@@ -22,73 +22,17 @@ es -h
 
 ## 安装
 
-本插件是一个 **DSH 配置文件包（profile bundle）**。安装方式有两种：
-
-### 方式一：从 GitHub 安装（推荐）
-
 ```powershell
 dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
 ```
 
-该命令会从 GitHub 获取插件，安装到配置文件的 `node_modules` 中，并**自动**在 `dsh.profile.bundles` 中添加对应条目（DSH 的 `reconcilePlugins` 机制会检测到该包包含 `dsh.bundle.patch`，自动将其加入 bundle 列表）。然后重启 DSH 即可。
+此命令从 GitHub 下载包，自动检测 `dsh.bundle` 声明并注册为 profile 层。重启 DSH 后生效。
 
 卸载：
 
 ```powershell
 dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 ```
-
-同样会自动从 `dsh.profile.bundles` 中移除。
-
-> 此方式要求 `dsh` 版本支持 GitHub 包安装。如果遇到问题，请使用方式二。
-
-### 方式二：手动放置
-
-将插件文件夹**直接放置**到 DSH 配置文件的 `node_modules` 中，并手动注册。
-
-**找到你的 DSH 配置文件**
-
-```powershell
-# 列出所有可用的配置文件
-Get-ChildItem "$env:USERPROFILE\.dsh\profiles" -Name
-```
-
-常见的配置文件：`web`、`tui`、`headless`。配置文件目录为 `$env:USERPROFILE\.dsh\profiles\<名称>\`。
-
-**第 1 步 — 把插件文件夹复制进配置文件**
-
-```powershell
-# 若作用域目录不存在则创建
-$target = "$env:USERPROFILE\.dsh\profiles\<名称>\node_modules\@zhourenke"
-New-Item -ItemType Directory -Force $target
-
-# 复制整个插件文件夹（package.json、cordis.patch.yml、lib/ 等）
-Copy-Item -Recurse C:\path\to\dsh-tool-everything "$target\"
-```
-
-复制后的目录必须包含 `package.json`（含 `dsh.bundle.patch`）、`cordis.patch.yml` 和 `lib/`。
-
-**第 2 步 — 注册 bundle**
-
-编辑 `$env:USERPROFILE\.dsh\profiles\<名称>\package.json`：
-
-```diff
-  "dsh": {
-    "profile": {
-      "bundles": [
-        "@deepseek-ai/dsh-base",
-        "@deepseek-ai/dsh-web-app",
-+       "@zhourenke/dsh-tool-everything"
-      ]
-    }
-  }
-```
-
-**无需在 `dependencies` 中添加任何条目**——DSH 启动时只按包名从配置文件的 `node_modules` 物理解析 bundle。
-
-**第 3 步 — 重启 DSH**
-
-下次启动 DSH 时插件会被加载。
 
 ### 验证安装
 
