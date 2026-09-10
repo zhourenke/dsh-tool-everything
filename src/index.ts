@@ -12,7 +12,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
-import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -787,7 +787,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
           },
         },
       },
-      render: (_args: Record<string, unknown>, value: Record<string, unknown>) => {
+      render: (_args, value) => {
         const v = value as {
           total: number
           truncated: boolean
@@ -822,7 +822,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
         })
         return [{ type: 'text' as const, text: `${header}\n\n${lines.join('\n')}` }]
       },
-      presentationMeta: (_args: Record<string, unknown>, value: Record<string, unknown>) => {
+      presentationMeta: (_args, value) => {
         const v = value as {
           total: number
           truncated: boolean
@@ -834,13 +834,10 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
           truncated: v.truncated,
           query: v.query,
           results: v.results.map((r) => String(r.path ?? '(unknown)')),
-        } as EverythingSearchMeta
+        }
       },
     },
-    async execute(
-      args: Record<string, unknown>,
-      exec: { signal: AbortSignal; agent?: { session?: { header?: { cwd?: string } } } },
-    ) {
+    async execute(args, exec) {
       const input = parseEverythingArgs(args)
       input._contentSearchRestricted = false
       input._contentSearchRejected = false
@@ -868,48 +865,48 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
       )
 
       if (run.noMatches) {
-        const result: Record<string, unknown> = {
-          total: 0, truncated: false, query: input.query, results: [],
+        return {
+          total: 0,
+          truncated: false,
+          query: input.query,
+          results: [],
+          ...(input._contentSearchRestricted
+            ? { warning: 'Content search was restricted to immediate files only (no recursion into subdirectories) via the parent: function, to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.' }
+            : {}),
         }
-        if (input._contentSearchRestricted) {
-          result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) via the parent: function, to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
-        }
-        return result
       }
 
       const entries = parseEsOutput(run.stdout)
       const results = entries.map((entry) => {
-        const result: Record<string, unknown> = {
+        return {
           path: entry.filename ?? entry.path ?? '(unknown)',
+          ...(entry.size !== null && entry.size !== undefined ? { size: entry.size } : {}),
+          ...(entry.date_modified !== null && entry.date_modified !== undefined
+            ? { date_modified: formatFiletime(entry.date_modified) }
+            : {}),
+          ...(entry.date_created !== null && entry.date_created !== undefined
+            ? { date_created: formatFiletime(entry.date_created) }
+            : {}),
+          ...(entry.date_accessed !== null && entry.date_accessed !== undefined
+            ? { date_accessed: formatFiletime(entry.date_accessed) }
+            : {}),
+          ...(entry.extension !== undefined ? { extension: entry.extension } : {}),
+          ...(entry.attributes !== undefined ? { attributes: formatAttributes(entry.attributes) } : {}),
         }
-        if (entry.size !== null && entry.size !== undefined) result.size = entry.size
-        if (entry.date_modified !== null && entry.date_modified !== undefined) {
-          result.date_modified = formatFiletime(entry.date_modified)
-        }
-        if (entry.date_created !== null && entry.date_created !== undefined) {
-          result.date_created = formatFiletime(entry.date_created)
-        }
-        if (entry.date_accessed !== null && entry.date_accessed !== undefined) {
-          result.date_accessed = formatFiletime(entry.date_accessed)
-        }
-        if (entry.extension !== undefined) result.extension = entry.extension
-        if (entry.attributes !== undefined) result.attributes = formatAttributes(entry.attributes)
-        return result
       })
 
       const truncated = results.length > input.maxResults
       const capped = results.slice(0, input.maxResults)
 
-      const result: Record<string, unknown> = {
+      return {
         total: results.length,
         truncated,
         query: input.query,
         results: capped,
+        ...(input._contentSearchRestricted
+          ? { warning: 'Content search was restricted to immediate files only (no recursion into subdirectories) via the parent: function, to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.' }
+          : {}),
       }
-      if (input._contentSearchRestricted) {
-        result.warning = 'Content search was restricted to immediate files only (no recursion into subdirectories) via the parent: function, to prevent the Everything engine from freezing: the original path was too broad (drive root or Users tree). Provide a narrow path such as path:C:\\Specific\\Folder for recursive content searches.'
-      }
-      return result
     },
   })
 
@@ -928,7 +925,7 @@ function applyEverythingTool(ctx: Record<string, unknown>, config: Record<string
 const name = 'tool-everything'
 
 /** Services required by the tool. */
-const inject = ['tools', 'subprocess']
+const inject = ['tools', 'subprocess', 'systemPrompt']
 
 /** Plugin configuration schema. */
 const Config = z.object({

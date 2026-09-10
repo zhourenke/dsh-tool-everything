@@ -94,6 +94,18 @@ The plugin is loaded on the next DSH startup.
 
 After restarting DSH, check that the tool is visible to the model — ask the model to list its tools, or simply ask it to search for a known file.
 
+## Compatibility
+
+Tested with **DSH v0.1.5-rc.1** (September 2026). The plugin requires the following runtime packages:
+
+- `@deepseek-ai/schemastery` (configuration schema)
+- `@deepseek-ai/cordis` (plugin framework)
+- `@deepseek-ai/dsh-tools` (tool definitions)
+- `@deepseek-ai/dsh-llm` (LLM error types)
+- `@deepseek-ai/dsh-subprocess` (subprocess seam)
+
+Install dependencies before use with the corresponding DSH version.
+
 ## Usage
 
 Once installed, the model can call `everything_search` with any Everything search query:
@@ -207,3 +219,5 @@ Always specify a concrete path such as `path:C:\Specific\Folder` when searching 
 ## License
 
 MIT
+
+Tested with DSH v0.1.5-rc.1.

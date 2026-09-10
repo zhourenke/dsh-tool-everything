@@ -94,6 +94,18 @@ Copy-Item -Recurse C:\path\to\dsh-tool-everything "$target\"
 
 重启 DSH 后，让模型列出可用工具，或直接让它搜索一个已知文件。
 
+## 兼容性
+
+已在 **DSH v0.1.5-rc.1**（2026 年 9 月）版本下测试通过。插件依赖以下运行时包：
+
+- `@deepseek-ai/schemastery`（配置校验）
+- `@deepseek-ai/cordis`（插件框架）
+- `@deepseek-ai/dsh-tools`（工具定义）
+- `@deepseek-ai/dsh-llm`（LLM 错误类型）
+- `@deepseek-ai/dsh-subprocess`（子进程接口）
+
+安装依赖后即可在相应版本的 DSH 中使用。
+
 ## 使用方法
 
 安装后，模型可以调用 `everything_search` 并传入任何 Everything 搜索查询：
@@ -207,3 +219,5 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 ## 许可证
 
 MIT
+
+已通过 DSH v0.1.5-rc.1 测试。
