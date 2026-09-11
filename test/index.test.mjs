@@ -193,6 +193,12 @@ test('a content: search on a drive root is restricted to immediate children', as
   assert.equal(harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG, '"C:"')
   assert.equal(typeof result.warning, 'string')
   assert.ok(result.warning.length > 0)
+  // The warning must name the scope as the caller wrote it (with its trailing
+  // slash), not the value the guard derived after stripping it.
+  assert.ok(
+    result.warning.includes('the path "C:\\"'),
+    `the warning must name the offending scope, got: ${result.warning}`,
+  )
 })
 
 test('the restriction warning names no internal mechanism', async () => {
@@ -240,6 +246,27 @@ test('an inline path: in the query is guarded as well', async () => {
   const result = await tool.execute({ query: 'path:C:\\ content:hello' }, execContext())
   assert.match(commandLine(harness), /parent:C:/)
   assert.equal(typeof result.warning, 'string')
+  // The inline route must name the inline value, not the (absent) path parameter.
+  assert.ok(
+    result.warning.includes('the path "C:\\"'),
+    `the warning must name the inline scope, got: ${result.warning}`,
+  )
+})
+
+test('the restriction warning states the four scopes actually treated as too broad', async () => {
+  // "a drive root or the Users tree" over-stated the guard: a workspace living
+  // at C:\Users\<user>\<project> is not restricted at all, and a caller reading
+  // the old wording could avoid content: searches that were never narrowed.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: 'content:hello', path: 'C:\\Users' }, execContext())
+
+  assert.match(result.warning, /a drive root/)
+  assert.match(result.warning, /Users or one level under it/, 'the Users scope is one level, not a tree')
+  assert.match(result.warning, /Documents and Settings/)
+  assert.match(result.warning, /current user home/)
+  assert.doesNotMatch(result.warning, /Users tree/, 'the old over-statement must be gone')
 })
 
 test('the broad-path guard does not apply to a name search', async () => {

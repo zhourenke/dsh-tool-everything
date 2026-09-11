@@ -43,12 +43,27 @@ const DEFAULT_RAW_OUTPUT_MAX_BYTES = 2e7
  * parameter and through Everything's `parent:` function when it was written
  * inline, and a message that says "via the parent: function" is wrong for the
  * first case. What the caller needs is the effect and the remedy.
+ *
+ * It does name the offending scope. isBroadPath accepts exactly four shapes —
+ * a drive root, `<drive>:\Users` or one level under it, `<drive>:\Documents and
+ * Settings` likewise, or the current user home — which is far narrower than "a
+ * drive root or the Users tree" suggests: a workspace living at
+ * `C:\Users\<user>\<project>` is not restricted at all. A caller that cannot
+ * tell which value tripped the guard cannot judge whether a retry with a
+ * similar path would be narrowed as well.
+ * @param path - the scope as the caller wrote it, or undefined when unavailable.
+ * @returns the warning text to attach to the result.
  */
-const CONTENT_SEARCH_RESTRICTED_WARNING =
-  'Content search was restricted to immediate children only (one level, no recursion into ' +
-  'subdirectories) because the original path was too broad — a drive root or the Users tree. ' +
-  'A recursive content scan across such a path would freeze the Everything engine. Provide a ' +
-  'narrower path, such as path: "C:\\Specific\\Folder", to search recursively.'
+function contentSearchRestrictedWarning(path: string | undefined): string {
+  const scope = path === undefined || path === '' ? 'the original path' : `the path "${path}"`
+  return (
+    'Content search was restricted to immediate children only (one level, no recursion into ' +
+    `subdirectories): ${scope} is treated as too broad — a drive root, <drive>:\\Users or one ` +
+    'level under it, <drive>:\\Documents and Settings likewise, or the current user home. A ' +
+    'recursive content scan across such a scope would freeze the Everything engine. Provide a ' +
+    'narrower path, such as path: "C:\\Specific\\Folder", to search recursively.'
+  )
+}
 
 // ---------------------------------------------------------------------------
 // System-prompt section placement
@@ -238,7 +253,14 @@ function isContentSearch(query: string): boolean {
   return /\bcontent:/i.test(query)
 }
 
-/** Detect paths that are too broad for content searches (drive roots, Users tree). */
+/**
+ * Detect scopes that are too broad for content searches. Exactly four shapes
+ * qualify — a drive root, `<drive>:\Users` or one level under it,
+ * `<drive>:\Documents and Settings` likewise, or the current user home — so a
+ * deep path such as `C:\Users\<user>\<project>` is NOT broad and must stay
+ * recursive. Keep this list and contentSearchRestrictedWarning in step: the
+ * warning enumerates the same four shapes to the caller.
+ */
 function isBroadPath(path: string): boolean {
   if (!path) return false
   // Strip trailing slashes AND wildcard suffixes before checking.
@@ -247,7 +269,8 @@ function isBroadPath(path: string): boolean {
   n = n.replace(/(?:\\[*?])+$/, '')
   // Drive root: C:\, D:\
   if (/^[A-Za-z]:\\?$/.test(n)) return true
-  // Entire Users tree: C:\Users, C:\Users\AnyUser
+  // C:\Users itself, or exactly one level under it (C:\Users\AnyUser) --
+  // one level only, never the whole subtree
   if (/^[A-Za-z]:\\Users(\\[^\\]+)?$/i.test(n)) return true
   // Legacy profile container
   if (/^[A-Za-z]:\\Documents and Settings(\\[^\\]+)?$/i.test(n)) return true
@@ -292,6 +315,8 @@ interface EverythingInput {
   columns: string[]
   /** @internal Set by buildEsCommand when content search was auto-restricted. */
   _contentSearchRestricted?: boolean
+  /** @internal The scope that tripped isBroadPath, as the caller wrote it (warning text). */
+  _contentSearchRestrictedPath?: string
   /** @internal Set by buildEsCommand when content search requires an explicit path. */
   _contentSearchRejected?: boolean
 }
@@ -508,6 +533,7 @@ function resolveQueryScope(
       // -parent is non-recursive, matching the parent: function it replaces.
       scopeByOption('-parent', restrictToImmediateDir(input.path))
       input._contentSearchRestricted = true
+      input._contentSearchRestrictedPath = input.path
     } else {
       scopeByOption('-path', input.path)
     }
@@ -527,6 +553,7 @@ function resolveQueryScope(
           (_, p: string) => `parent:${restrictToImmediateDir(p)} `,
         )
         input._contentSearchRestricted = true
+        input._contentSearchRestrictedPath = inlinePath
       }
       // inline path present and not broad → pass through normally
     } else if (isContentSearch(query)) {
@@ -1096,6 +1123,7 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
     async execute(args, exec) {
       const input = parseEverythingArgs(args)
       input._contentSearchRestricted = false
+      input._contentSearchRestrictedPath = undefined
       input._contentSearchRejected = false
       const invocation = buildEsCommand(input)
 
@@ -1127,7 +1155,7 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
           query: input.query,
           results: [],
           ...(input._contentSearchRestricted
-            ? { warning: CONTENT_SEARCH_RESTRICTED_WARNING }
+            ? { warning: contentSearchRestrictedWarning(input._contentSearchRestrictedPath) }
             : {}),
         }
       }
@@ -1177,7 +1205,7 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
         query: input.query,
         results,
         ...(input._contentSearchRestricted
-          ? { warning: CONTENT_SEARCH_RESTRICTED_WARNING }
+          ? { warning: contentSearchRestrictedWarning(input._contentSearchRestrictedPath) }
           : {}),
       }
     },
