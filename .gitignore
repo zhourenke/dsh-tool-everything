@@ -1,8 +1,13 @@
+# Never ignore lib/ or lib/types/: route A (git distribution) requires every
+# build artifact to be committed, because `dsh plugin add github:<user>/<repo>`
+# only receives files that git tracks. Ignoring lib/types/ produces a
+# "half-published" plugin: it runs, but TypeScript consumers get no declarations.
 node_modules/
 dist/
 .turbo/
 *.tsbuildinfo
-lib/types/
+.pnpm-store/
+.payload-verify/
 .DS_Store
 Thumbs.db
 *.log

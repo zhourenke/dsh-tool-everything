@@ -65,6 +65,88 @@ class EverythingError extends HarnessError {
 }
 
 // ---------------------------------------------------------------------------
+// Host service contracts
+// ---------------------------------------------------------------------------
+//
+// Structural descriptions of the host surface this plugin consumes. They are
+// declared locally (rather than as `Record<string, unknown>` plus casts, or as
+// `any`) so every call site is actually checked: a misspelled service name, a
+// misspelled method, or a wrong argument shape fails at typecheck instead of at
+// runtime inside the DSH loader.
+//
+// All three services are hard dependencies listed in `inject`, so none is
+// modelled as optional. Optional capabilities would use `ctx.get(name)` and be
+// declared `| undefined` here.
+
+/** One collected output stream returned by the subprocess seam. */
+interface CollectedStream {
+  text?: string
+  lossy?: boolean
+}
+
+/** Terminal facts of one finished process. */
+interface ProcessOutcome {
+  signal: string | null
+  exitCode: number | null
+}
+
+/**
+ * Spawn request accepted by `ctx.subprocess.spawn()`. Only the fields this
+ * plugin sets are declared; the seam accepts more.
+ */
+interface SubprocessSpawnSpec {
+  argv: string[]
+  cwd: string
+  stdio: {
+    stdin: 'ignore'
+    stdout: { maxBytes: number }
+    stderr: { maxBytes: number }
+  }
+  graceMs: number
+  signal: AbortSignal
+}
+
+/** Live handle for one spawned process. */
+interface SubprocessHandle {
+  done: Promise<ProcessOutcome>
+  collected: {
+    stdout?: { readFrom(offset: number): CollectedStream }
+    stderr?: { readFrom(offset: number): CollectedStream }
+  }
+}
+
+/** One system-prompt section request. */
+interface PromptSection {
+  name: string
+  order: number
+  text: string
+}
+
+/**
+ * Execution context handed to a tool's `execute`. The session cwd is read from
+ * `agent.session.header.cwd`, matching the subprocess seam's own default.
+ */
+interface ToolExecContext {
+  signal: AbortSignal
+  agent?: { session?: { header?: { cwd?: string } } }
+}
+
+/** Plugin configuration after schemastery defaulting (fields stay optional so the coalescing below is honest). */
+interface EverythingConfig {
+  timeoutMs?: number
+  graceMs?: number
+  stderrMaxBytes?: number
+  rawOutputMaxBytes?: number
+}
+
+/** The host services this plugin consumes. */
+interface HostContext {
+  systemPrompt: { section(section: PromptSection): unknown }
+  tools: { register(definition: { name: string }): unknown }
+  subprocess: { spawn(spec: SubprocessSpawnSpec): SubprocessHandle }
+}
+
+// ---------------------------------------------------------------------------
 // es output column flags
 // ---------------------------------------------------------------------------
 
@@ -417,8 +499,8 @@ function parseEsOutput(stdout: string): EsResultEntry[] {
  * Run the `es` command with the given argv and return its complete stdout.
  */
 async function runEs(
-  ctx: any,
-  exec: { signal: AbortSignal; agent?: { session?: { header?: { cwd?: string } } } },
+  ctx: HostContext,
+  exec: ToolExecContext,
   toolName: string,
   argv: string[],
   rawOutputMaxBytes: number,
@@ -433,7 +515,7 @@ async function runEs(
   }
 
   const workdir = exec.agent?.session?.header?.cwd ?? process.cwd()
-  let handle: { done: Promise<unknown>; collected: { stdout?: { readFrom: Function }; stderr?: { readFrom: Function } } }
+  let handle: SubprocessHandle
 
   try {
     handle = ctx.subprocess.spawn({
@@ -446,7 +528,7 @@ async function runEs(
       },
       graceMs,
       signal: exec.signal,
-    }) as typeof handle
+    })
   } catch (error) {
     if (exec.signal.aborted) {
       throw new EverythingError(
@@ -473,9 +555,9 @@ async function runEs(
     )
   }
 
-  let outcome: { signal: string | null; exitCode: number | null }
+  let outcome: ProcessOutcome
   try {
-    outcome = (await handle.done) as typeof outcome
+    outcome = await handle.done
   } catch (error) {
     throw new EverythingError(
       `${toolName} could not start the es command: ${(error as Error).message}`,
@@ -595,7 +677,7 @@ function everythingSearchPresentResult(
 // Tool definition
 // ---------------------------------------------------------------------------
 
-function applyEverythingTool(ctx: any, config: any): void {
+function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
   const timeoutMs = Number(config.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   const graceMs = Number(config.graceMs ?? DEFAULT_GRACE_MS)
   const stderrMaxBytes = Number(config.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES)
@@ -907,7 +989,7 @@ const Config = z.object({
 /**
  * Register the `everything_search` tool.
  */
-async function apply(ctx: any, config: any): Promise<void> {
+async function apply(ctx: HostContext, config: EverythingConfig): Promise<void> {
   applyEverythingTool(ctx, config)
 }
 

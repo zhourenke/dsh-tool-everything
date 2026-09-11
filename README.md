@@ -47,8 +47,11 @@ dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 - `@deepseek-ai/dsh-tools`（工具定义）
 - `@deepseek-ai/dsh-llm`（LLM 错误类型）
 - `@deepseek-ai/dsh-subprocess`（子进程接口）
+- `@deepseek-ai/dsh-system-prompt`（系统提示词段落注册）
 
 安装依赖后即可在相应版本的 DSH 中使用。
+
+本插件以 git 分发（路线 A）：编译产物 `lib/`（含类型声明 `lib/types/`）已随源码一并提交，因此上面的一条命令即可安装，无需本地构建，也不依赖 `prepare` 脚本。
 
 ## 使用方法
 

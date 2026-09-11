@@ -47,8 +47,11 @@ Tested with **DSH v0.1.5-rc.1** (September 2026). The plugin requires the follow
 - `@deepseek-ai/dsh-tools` (tool definitions)
 - `@deepseek-ai/dsh-llm` (LLM error types)
 - `@deepseek-ai/dsh-subprocess` (subprocess seam)
+- `@deepseek-ai/dsh-system-prompt` (system-prompt section registration)
 
 Install dependencies before use with the corresponding DSH version.
+
+This plugin is distributed via git (route A): the build artifacts under `lib/` (including the `lib/types/` declarations) are committed alongside the source, so the single command above installs a ready-to-run plugin. No local build and no `prepare` script are involved.
 
 ## Usage
 
