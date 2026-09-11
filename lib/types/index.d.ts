@@ -87,6 +87,8 @@ interface EverythingConfig {
 interface HostContext {
     systemPrompt: {
         section(section: PromptSection): unknown;
+        /** Central placement of a registered section, or undefined for an unknown name. */
+        getSectionOrder(name: string): number | undefined;
     };
     tools: {
         register(definition: {

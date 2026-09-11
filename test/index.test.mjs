@@ -13,11 +13,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, Config, inject, name } from '../lib/index.js'
 
+/** The host's own prompt-section registry, mirrored for the ordering tests. */
+const HOST_SECTION_ORDERS = { TOOL_GLOB: 1400, TOOL_GREP: 1500, TOOL_JOBS: 1600 }
+
 /** Minimal in-memory stand-in for the host services this plugin injects. */
 function createHarness(options = {}) {
   const spawnCalls = []
   const tools = []
   const sections = []
+  const orders = options.orders ?? HOST_SECTION_ORDERS
   const respond =
     options.respond ??
     (() => ({
@@ -29,7 +33,17 @@ function createHarness(options = {}) {
     }))
 
   const ctx = {
-    systemPrompt: { section: (section) => sections.push(section) },
+    systemPrompt: {
+      section: (section) => {
+        // Mirrors dsh-system-prompt's own validation, so a non-finite order
+        // fails here exactly as it would take the plugin down at DSH startup.
+        if (!Number.isFinite(section.order)) {
+          throw new TypeError(`prompt section "${section.name}" order must be a finite number`)
+        }
+        sections.push(section)
+      },
+      getSectionOrder: (sectionName) => orders[sectionName],
+    },
     tools: { register: (tool) => tools.push(tool) },
     subprocess: {
       spawn: (spec) => {
@@ -104,6 +118,41 @@ test('apply registers the tool and its system-prompt section', async () => {
     Number.isFinite(harness.sections[0].order),
     'section order must be finite or dsh-system-prompt rejects it',
   )
+})
+
+// ---------------------------------------------------------------------------
+// System-prompt section placement
+// ---------------------------------------------------------------------------
+
+test('the guidance section is placed inside the host tool band', async () => {
+  const harness = createHarness()
+  await loadTool(harness)
+  const { order } = harness.sections[0]
+
+  assert.equal(order, 1510, 'TOOL_GREP 1500 plus the 10-slot offset')
+  assert.ok(order >= 1000 && order < 3000, 'TOOL_* sections occupy 1000-2900')
+  assert.ok(order > HOST_SECTION_ORDERS.TOOL_GLOB, 'must follow the discovery family')
+  assert.ok(order < HOST_SECTION_ORDERS.TOOL_JOBS, 'must precede the jobs family')
+})
+
+test('the section order follows the host registry when DSH reshuffles it', async () => {
+  const harness = createHarness({ orders: { TOOL_GREP: 2500 } })
+  await loadTool(harness)
+
+  assert.equal(
+    harness.sections[0].order,
+    2510,
+    'the anchor is read at runtime, never copied as a literal',
+  )
+})
+
+test('a missing anchor falls back to a finite tool-band order instead of throwing', async () => {
+  const harness = createHarness({ orders: {} })
+  await loadTool(harness)
+
+  const { order } = harness.sections[0]
+  assert.ok(Number.isFinite(order), 'undefined + offset would be NaN and section() would throw')
+  assert.equal(order, 1510)
 })
 
 // ---------------------------------------------------------------------------
