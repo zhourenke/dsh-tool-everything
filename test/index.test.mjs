@@ -461,6 +461,55 @@ test('FILETIME values are rendered as ISO-ish local timestamps', async () => {
   assert.equal(result.results[0].date_modified, '2026-01-02 03:04:05')
 })
 
+test('a directory match does not leak a null extension into the output', async () => {
+  // Measured against the real es (Everything CLI) with `-json -ext`:
+  //   directory            -> "extension":null
+  //   extensionless file   -> "extension":""
+  //   normal file          -> "extension":"js"
+  // The declared output schema types `extension` as a string, so a null used to
+  // make the harness reject the WHOLE result, not just the offending row:
+  //   tool "everything_search" returned invalid output:
+  //   "value.results[0].extension" must be a string
+  // Since folder_only defaults to false, directories are matched by default, so
+  // every query whose hits included a folder failed outright.
+  const harness = createHarness({
+    respond: succeedWith(
+      JSON.stringify([
+        {
+          filename: 'C:\\proj\\node_modules\\playwright-core\\',
+          size: 0,
+          extension: null,
+          attributes: 16,
+        },
+        { filename: 'C:\\proj\\LICENSE', extension: '' },
+        { filename: 'C:\\proj\\a.js', extension: 'js' },
+      ]),
+    ),
+  })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute(
+    { query: '*playwright*', include_extension: true, include_size: true },
+    execContext(),
+  )
+
+  assert.equal(result.results.length, 3)
+  assert.ok(
+    !('extension' in result.results[0]),
+    'a directory must omit the extension key rather than emit null',
+  )
+  assert.equal(result.results[1].extension, '', 'an extensionless file reports an empty string')
+  assert.equal(result.results[2].extension, 'js')
+  assert.ok(result.results[0].path.endsWith('\\'), 'a directory is recognisable by its trailing separator')
+
+  // The invariant the host schema actually enforces: no value may be null.
+  for (const [i, row] of result.results.entries()) {
+    for (const [key, value] of Object.entries(row)) {
+      assert.notEqual(value, null, `results[${i}].${key} must not be null`)
+    }
+  }
+})
+
 // es caps its output at -n, so `results.length > max_results` can never happen
 // and a full listing is indistinguishable from a complete one without asking.
 // These three cases cover the recount that closes that gap.

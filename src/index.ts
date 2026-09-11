@@ -1174,7 +1174,15 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
           ...(entry.date_accessed !== null && entry.date_accessed !== undefined
             ? { date_accessed: formatFiletime(entry.date_accessed) }
             : {}),
-          ...(entry.extension !== undefined ? { extension: entry.extension } : {}),
+          // es reports "extension":null for a directory, "" for an extensionless
+          // file, and the extension otherwise (measured against the real es with
+          // `-json -ext`). The declared output schema types this field as a
+          // string, so letting a null through makes the harness reject the WHOLE
+          // result -- every row, not just the offending one. Emit it only when it
+          // really is a string; a directory is recognisable by its trailing "\".
+          ...(typeof entry.extension === 'string' ? { extension: entry.extension } : {}),
+          // formatAttributes always returns a string (even for null), so this one
+          // cannot leak a non-string into the schema.
           ...(entry.attributes !== undefined ? { attributes: formatAttributes(entry.attributes) } : {}),
         }
       })
