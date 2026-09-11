@@ -78,6 +78,17 @@ function succeedWith(stdout) {
   })
 }
 
+/**
+ * A responder that answers the listing and the follow-up `-get-result-count`
+ * query with different output, the way the two real es invocations differ.
+ */
+function listingThenCount(listingStdout, countStdout) {
+  return (spec) =>
+    spec.argv[2].includes('-get-result-count')
+      ? succeedWith(countStdout)()
+      : succeedWith(listingStdout)()
+}
+
 /** The `cmd /c` command string of the first spawn. */
 function commandLine(harness) {
   assert.ok(harness.spawnCalls.length > 0, 'expected a spawn call')
@@ -270,6 +281,79 @@ test('-r is emitted last, immediately before the query', async () => {
 })
 
 // ---------------------------------------------------------------------------
+// Regex mode + path
+//
+// Under -r es compiles the WHOLE search string as one regular expression, so a
+// folded-in `path:<dir>` prefix stops being an Everything function and becomes
+// literal regex text that no filename matches — the search returns nothing,
+// silently. Measured against es 1.1.0.37: `-r "path:<dir> .*"` returns 0 while
+// `-path <dir> -r ".*"` returns the directory's contents.
+// ---------------------------------------------------------------------------
+
+test('regex mode scopes through the -path option, not a path: prefix', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '^index\\.ts$', regex: true, path: 'C:\\proj\\src' }, execContext())
+  const line = commandLine(harness)
+
+  assert.ok(line.includes('-path %EVERYTHING_TOOL_PATH_ARG%'), `expected a -path option, got: ${line}`)
+  assert.ok(!line.includes('path:C:'), 'the directory must not be folded into the regex')
+  assert.equal(harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG, '"C:\\proj\\src"')
+})
+
+test('a space-containing path survives as one quoted argument', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute(
+    { query: '^pycharm64\\.exe$', regex: true, path: 'C:\\Program Files\\JetBrains' },
+    execContext(),
+  )
+
+  assert.equal(
+    harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG,
+    '"C:\\Program Files\\JetBrains"',
+    'the quotes live in the environment value so cmd cannot tear the path apart',
+  )
+  assert.ok(
+    !commandLine(harness).includes('"'),
+    'a quote inside the command string is escaped as \\" by spawn and then mangled by cmd',
+  )
+})
+
+test('regex mode restricts a broad content search with -parent', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: 'content:needle', regex: true, path: 'C:\\' }, execContext())
+  const line = commandLine(harness)
+
+  assert.ok(line.includes('-parent %EVERYTHING_TOOL_PATH_ARG%'), `expected -parent, got: ${line}`)
+  assert.ok(line.includes('%EVERYTHING_TOOL_PATH_ARG%'), 'the scope value travels via the environment')
+  assert.ok(
+    harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG.startsWith('"'),
+    'the environment value carries its own quotes',
+  )
+  assert.ok(result.warning, 'a restricted content search still warns')
+})
+
+test('a non-regex path still folds into the path: function', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '*.ts', path: 'C:\\proj' }, execContext())
+  const line = commandLine(harness)
+
+  assert.ok(line.includes('path:C:\\proj'), `expected the path: prefix, got: ${line}`)
+  assert.equal(
+    harness.spawnCalls[0].env,
+    undefined,
+    'the environment indirection is only needed where a quote cannot go',
+  )
+})
+
+// ---------------------------------------------------------------------------
 // es stdout parsing
 // ---------------------------------------------------------------------------
 
@@ -314,16 +398,60 @@ test('FILETIME values are rendered as ISO-ish local timestamps', async () => {
   assert.equal(result.results[0].date_modified, '2026-01-02 03:04:05')
 })
 
-test('results beyond max_results are capped and flagged as truncated', async () => {
-  const entries = Array.from({ length: 5 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
-  const harness = createHarness({ respond: succeedWith(JSON.stringify(entries)) })
+// es caps its output at -n, so `results.length > max_results` can never happen
+// and a full listing is indistinguishable from a complete one without asking.
+// These three cases cover the recount that closes that gap.
+test('a listing that fills the limit is recounted exactly', async () => {
+  const listed = Array.from({ length: 2 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
+  const harness = createHarness({
+    respond: listingThenCount(JSON.stringify(listed), '64546'),
+  })
   const tool = await loadTool(harness)
 
   const result = await tool.execute({ query: '*.pdf', max_results: 2 }, execContext())
 
-  assert.equal(result.total, 5)
+  assert.equal(result.total, 64546, 'the true match count, not the number returned')
   assert.equal(result.truncated, true)
   assert.equal(result.results.length, 2)
+  assert.equal(harness.spawnCalls.length, 2, 'one listing plus one count query')
+})
+
+test('a listing shorter than the limit is its own total, with no extra query', async () => {
+  const listed = Array.from({ length: 2 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
+  const harness = createHarness({ respond: succeedWith(JSON.stringify(listed)) })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: '*.pdf', max_results: 10 }, execContext())
+
+  assert.equal(result.total, 2)
+  assert.equal(result.truncated, false)
+  assert.equal(harness.spawnCalls.length, 1, 'the count query costs a spawn, so skip it when unnecessary')
+})
+
+test('a full listing whose count cannot be read reports that more may exist', async () => {
+  const listed = Array.from({ length: 2 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
+  const harness = createHarness({
+    respond: listingThenCount(JSON.stringify(listed), 'not a number'),
+  })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: '*.pdf', max_results: 2 }, execContext())
+
+  assert.equal(result.truncated, true, 'degrade to "may be more", never assert a capped count as the total')
+  assert.equal(result.total, 2)
+})
+
+test('a listing that exactly equals the limit is not called truncated', async () => {
+  const listed = Array.from({ length: 2 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
+  const harness = createHarness({
+    respond: listingThenCount(JSON.stringify(listed), '2'),
+  })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: '*.pdf', max_results: 2 }, execContext())
+
+  assert.equal(result.total, 2)
+  assert.equal(result.truncated, false, 'the recount proves the listing was complete')
 })
 
 test('an empty es result is reported as zero matches', async () => {

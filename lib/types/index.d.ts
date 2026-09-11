@@ -57,6 +57,12 @@ interface SubprocessSpawnSpec {
     };
     graceMs: number;
     signal: AbortSignal;
+    /**
+     * Extra environment entries for the child, merged onto the implementation's
+     * scrubbed parent base. Used to carry a quoted `-path` / `-parent` value past
+     * cmd's tokenizer without putting a quote character in the command string.
+     */
+    env?: Record<string, string>;
 }
 /** Live handle for one spawned process. */
 interface SubprocessHandle {

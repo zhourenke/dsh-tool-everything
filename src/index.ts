@@ -139,6 +139,12 @@ interface SubprocessSpawnSpec {
   }
   graceMs: number
   signal: AbortSignal
+  /**
+   * Extra environment entries for the child, merged onto the implementation's
+   * scrubbed parent base. Used to carry a quoted `-path` / `-parent` value past
+   * cmd's tokenizer without putting a quote character in the command string.
+   */
+  env?: Record<string, string>
 }
 
 /** Live handle for one spawned process. */
@@ -345,11 +351,31 @@ function escapeForCmd(arg: string): string {
 }
 
 /**
+ * Environment variable that carries a `-path` / `-parent` value to the command
+ * string. The value is stored *including* its surrounding double quotes, so the
+ * command string can reference it as a bare `%NAME%` and never contain a quote
+ * character of its own. That matters because Node's spawn escapes a quote inside
+ * the command string as `\"`, and cmd then tears the argument apart — measured:
+ * an in-string `-path "C:\Program Files"` reaches es as `"C:\Program` plus
+ * `Files"`, while the same value delivered through the environment arrives as
+ * the single argv element `C:\Program Files`.
+ */
+const PATH_ARG_ENV = 'EVERYTHING_TOOL_PATH_ARG'
+
+/** One prepared es invocation: the argv to spawn plus any environment it needs. */
+interface EsInvocation {
+  argv: string[]
+  env?: Record<string, string>
+}
+
+/**
  * Build the argv array for the spawn call: a single
  * `["cmd", "/c", "chcp 65001>nul & es ..."]` command string. The console
  * code page is switched to UTF-8 (65001) before es runs because es outputs
  * filenames in the system ANSI code page (e.g. GB2312 on Chinese Windows),
- * which the harness subprocess decodes as UTF-8 and garbles.
+ * which the harness subprocess decodes as UTF-8 and garbles. es exposes no
+ * UTF-8 option for console output (-utf8-bom applies only to -export-* files),
+ * so the code-page switch and therefore cmd itself are both required.
  *
  * The command is ONE joined string, not separate argv elements: cmd /c
  * strips the outer quotes Node adds, leaving the caret escapes to take
@@ -357,11 +383,19 @@ function escapeForCmd(arg: string): string {
  * space-containing elements and cmd then keeps those quotes (a quote inside
  * the search text becomes a literal Everything search marker).
  *
- * The `path` argument is folded into the query as Everything's `path:`
- * function prefix (`path:C:\Program^ Files\MacType *.ini`) rather than the
- * `-path` option: a `-path` value containing spaces needs quotes, and Node's
- * `\"` escaping of those quotes breaks cmd. The `path:` function handles
- * space-containing paths correctly after caret-escaping.
+ * Outside regex mode the `path` argument is folded into the query as
+ * Everything's `path:` function prefix (`path:C:\Program^ Files\MacType *.ini`)
+ * rather than the `-path` option: a `-path` value containing spaces needs
+ * quotes, and Node's `\"` escaping of those quotes breaks cmd. The `path:`
+ * function handles space-containing paths correctly after caret-escaping.
+ *
+ * In regex mode that fold-in does NOT work and the search silently returns
+ * nothing: es compiles the entire search string as one regular expression, so
+ * `path:C:\dir` stops being a function and becomes literal regex text that no
+ * filename matches. Verified: `-r path:<dir> .*` returns 0 while
+ * `-path <dir> -r .*` returns the directory's contents. Regex mode therefore
+ * switches to the `-path` / `-parent` options, whose values travel through
+ * PATH_ARG_ENV so a space-containing path still arrives as one argv element.
  *
  * es also parses its option list strictly left to right and is greedy about
  * the search-mode switches: -r (regex) and -i/-w/-p (case/whole-word/
@@ -370,7 +404,7 @@ function escapeForCmd(arg: string): string {
  * the search text and silently returns zero results — verified empirically:
  * `-size -n 5 -r query` works, `-r -size query` does not.
  */
-function buildEsCommand(input: EverythingInput): string[] {
+function buildEsCommand(input: EverythingInput): EsInvocation {
   const esArgs: string[] = ['-json']
 
   // 1. Display columns first (never after the search switches).
@@ -382,42 +416,101 @@ function buildEsCommand(input: EverythingInput): string[] {
   // 2. Result-count limit.
   esArgs.push('-n', String(input.maxResults))
 
-  // 3. File/folder type filters.
-  if (input.fileOnly) esArgs.push('/a-d')
-  if (input.folderOnly) esArgs.push('/ad')
+  // 3. File/folder type and attribute filters (shared with the count query).
+  pushMatchFilters(esArgs, input)
 
-  // 4. Attribute filter.
-  if (input.attributes !== undefined) {
-    esArgs.push(`/a${input.attributes}`)
-  }
-
-  // 5. Sort.
+  // 4. Sort.
   if (input.sortBy !== undefined) {
     const direction = input.sortDesc ? 'descending' : 'ascending'
     esArgs.push('-sort', `${input.sortBy}-${direction}`)
   }
 
-  // 6. Non-greedy search switches, in any order among themselves.
+  // 5. Search switches and directory scope, then the query itself.
+  const { query, env } = resolveQueryScope(input, esArgs)
+  esArgs.push(escapeForCmd(query))
+
+  return makeInvocation(esArgs, env)
+}
+
+/**
+ * Build the `es -get-result-count` invocation for the same search. Everything's
+ * `-get-result-count` reports the true number of matches without listing them,
+ * which is the only way to know a capped listing was capped: es is invoked with
+ * `-n <maxResults>` for the listing, so its output can never exceed that number
+ * and a "more results exist" test on the returned array alone can never fire.
+ *
+ * Columns, `-n` and the sort are omitted — they cannot change the count.
+ */
+function buildEsCountCommand(input: EverythingInput): EsInvocation {
+  const esArgs: string[] = ['-get-result-count']
+
+  pushMatchFilters(esArgs, input)
+
+  const { query, env } = resolveQueryScope(input, esArgs)
+  esArgs.push(escapeForCmd(query))
+
+  return makeInvocation(esArgs, env)
+}
+
+/** Filters restricting which entries match: file/folder type and attributes. */
+function pushMatchFilters(esArgs: string[], input: EverythingInput): void {
+  if (input.fileOnly) esArgs.push('/a-d')
+  if (input.folderOnly) esArgs.push('/ad')
+  if (input.attributes !== undefined) esArgs.push(`/a${input.attributes}`)
+}
+
+/**
+ * Append the search-mode switches, the directory scope and the query text.
+ *
+ * Order is load-bearing: es parses its options strictly left to right and the
+ * search-mode switches (-i/-w/-p/-r) are greedy, so they must come last, with
+ * the greedy `-r` immediately before the query. Any option after them is
+ * swallowed into the search text — verified empirically: `-size -n 5 -r query`
+ * works, `-r -size query` does not.
+ */
+function resolveQueryScope(
+  input: EverythingInput,
+  esArgs: string[],
+): { query: string; env?: Record<string, string> } {
+  // Non-greedy search switches, in any order among themselves.
   if (input.matchCase) esArgs.push('-i')
   if (input.matchWholeWord) esArgs.push('-w')
   if (input.matchPath) esArgs.push('-p')
 
-  // 7. -r is greedy: it MUST be the final option, right before the query.
-  if (input.regex) esArgs.push('-r')
-
-  // 8. Build the query: fold the path argument into Everything's path:
-  //    function prefix so space-containing paths need no quotes.
+  // Resolve the directory scope. Under -r this becomes a real option (applied
+  // outside the expression) rather than a path:/parent: prefix, because inside
+  // a regex those function names are literal text.
   let query = input.query
+  let env: Record<string, string> | undefined
+
+  /** Scope the search through an option, handing the value over by environment. */
+  const scopeByOption = (option: '-path' | '-parent', value: string): void => {
+    env = { ...(env ?? {}), [PATH_ARG_ENV]: `"${value}"` }
+    esArgs.push(option, `%${PATH_ARG_ENV}%`)
+  }
+
   if (input.path !== undefined) {
-    if (isContentSearch(query) && isBroadPath(input.path)) {
+    const broadContent = isContentSearch(query) && isBroadPath(input.path)
+    if (input.regex) {
+      if (broadContent) {
+        // -parent is non-recursive, matching what the parent: function did.
+        scopeByOption('-parent', restrictToImmediateDir(input.path))
+        input._contentSearchRestricted = true
+      } else {
+        scopeByOption('-path', input.path)
+      }
+    } else if (broadContent) {
       query = `parent:${restrictToImmediateDir(input.path)} ${query}`
       input._contentSearchRestricted = true
     } else {
       query = `path:${input.path} ${query}`
     }
   } else {
-    // Check the query string itself for an inline path: function
-    const inlinePath = extractInlinePath(query)
+    // Check the query string itself for an inline path: function. Under -r it
+    // is deliberately left alone: the caller wrote a regular expression, and
+    // "path:" inside one is literal text by regex semantics. That also means it
+    // cannot scope a content search, so the guard below still applies.
+    const inlinePath = input.regex ? undefined : extractInlinePath(query)
     if (inlinePath) {
       if (isBroadPath(inlinePath) && isContentSearch(query)) {
         query = query.replace(
@@ -435,18 +528,55 @@ function buildEsCommand(input: EverythingInput): string[] {
     }
   }
 
-  // The query may contain cmd special characters (e.g. > in size:>1gb, |
-  // in *.pdf|*.txt, spaces in multi-word queries), so every one of them
-  // must be caret-escaped. Quotes would be passed to Everything as a
-  // literal-search marker and return zero results.
-  esArgs.push(escapeForCmd(query))
+  // -r is greedy: it MUST be the final option, right before the query.
+  if (input.regex) esArgs.push('-r')
 
-  // Build a single cmd /c command string that:
-  // 1. Changes the console code page to UTF-8 (65001)
-  // 2. Redirects chcp's own banner to nul
-  // 3. Runs es with all the arguments
+  return env === undefined ? { query } : { query, env }
+}
+
+/**
+ * Wrap the finished es argument list in the single `cmd /c` command string:
+ * the console code page is switched to UTF-8 (65001) first because es writes
+ * filenames in the system ANSI code page (e.g. GB2312 on Chinese Windows),
+ * which the harness subprocess decodes as UTF-8 and garbles, and chcp's banner
+ * is redirected to nul.
+ */
+function makeInvocation(esArgs: string[], env?: Record<string, string>): EsInvocation {
   const cmdLine = `chcp 65001>nul & es ${esArgs.join(' ')}`
-  return ['cmd', '/c', cmdLine]
+  return env === undefined ? { argv: ['cmd', '/c', cmdLine] } : { argv: ['cmd', '/c', cmdLine], env }
+}
+
+/**
+ * Ask Everything for the exact match count of an already-validated search.
+ *
+ * Returns undefined when the count cannot be read, so a listing that already
+ * succeeded is never failed by the follow-up query; the caller degrades to
+ * reporting that more results may exist.
+ */
+async function countMatches(
+  ctx: HostContext,
+  exec: ToolExecContext,
+  input: EverythingInput,
+  rawOutputMaxBytes: number,
+  graceMs: number,
+  stderrMaxBytes: number,
+): Promise<number | undefined> {
+  try {
+    const run = await runEs(
+      ctx,
+      exec,
+      'everything_search',
+      buildEsCountCommand(input),
+      rawOutputMaxBytes,
+      graceMs,
+      stderrMaxBytes,
+    )
+    if (run.noMatches) return 0
+    const count = Number.parseInt(run.stdout.trim(), 10)
+    return Number.isSafeInteger(count) && count >= 0 ? count : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +682,7 @@ async function runEs(
   ctx: HostContext,
   exec: ToolExecContext,
   toolName: string,
-  argv: string[],
+  invocation: EsInvocation,
   rawOutputMaxBytes: number,
   graceMs: number,
   stderrMaxBytes: number,
@@ -569,7 +699,7 @@ async function runEs(
 
   try {
     handle = ctx.subprocess.spawn({
-      argv,
+      argv: invocation.argv,
       cwd: workdir,
       stdio: {
         stdin: 'ignore',
@@ -578,6 +708,7 @@ async function runEs(
       },
       graceMs,
       signal: exec.signal,
+      ...(invocation.env === undefined ? {} : { env: invocation.env }),
     })
   } catch (error) {
     if (exec.signal.aborted) {
@@ -947,7 +1078,7 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
       const input = parseEverythingArgs(args)
       input._contentSearchRestricted = false
       input._contentSearchRejected = false
-      const argv = buildEsCommand(input)
+      const invocation = buildEsCommand(input)
 
       // Reject content: searches with no path — attempting them would
       // freeze Everything while it reads every file on every drive.
@@ -964,7 +1095,7 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
         ctx,
         exec,
         'everything_search',
-        argv,
+        invocation,
         rawOutputMaxBytes,
         graceMs,
         stderrMaxBytes,
@@ -1001,14 +1132,31 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
         }
       })
 
-      const truncated = results.length > input.maxResults
-      const capped = results.slice(0, input.maxResults)
+      // A listing that filled the limit may be hiding further matches: es was
+      // invoked with -n maxResults, so the returned array can never reveal it
+      // (es caps its output exactly, making results.length > maxResults
+      // unreachable). Ask for the exact count only in that case — a listing
+      // shorter than the limit is already its own total.
+      let total = results.length
+      let truncated = false
+      if (results.length >= input.maxResults) {
+        const exact = await countMatches(ctx, exec, input, rawOutputMaxBytes, graceMs, stderrMaxBytes)
+        if (exact === undefined) {
+          // The listing is still valid, but it is full and the true total is
+          // unknown, so report that more may exist rather than assert a false
+          // total from the capped slice.
+          truncated = true
+        } else {
+          total = exact
+          truncated = exact > results.length
+        }
+      }
 
       return {
-        total: results.length,
+        total,
         truncated,
         query: input.query,
-        results: capped,
+        results,
         ...(input._contentSearchRestricted
           ? { warning: CONTENT_SEARCH_RESTRICTED_WARNING }
           : {}),
