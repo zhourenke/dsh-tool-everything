@@ -383,19 +383,27 @@ interface EsInvocation {
  * space-containing elements and cmd then keeps those quotes (a quote inside
  * the search text becomes a literal Everything search marker).
  *
- * Outside regex mode the `path` argument is folded into the query as
- * Everything's `path:` function prefix (`path:C:\Program^ Files\MacType *.ini`)
- * rather than the `-path` option: a `-path` value containing spaces needs
- * quotes, and Node's `\"` escaping of those quotes breaks cmd. The `path:`
- * function handles space-containing paths correctly after caret-escaping.
+ * The `path` argument is always passed as es's `-path` option (or `-parent`
+ * for a broad content search), never folded into the query as Everything's
+ * `path:` function prefix. Two independent reasons, both measured against
+ * es 1.1.0.37:
  *
- * In regex mode that fold-in does NOT work and the search silently returns
- * nothing: es compiles the entire search string as one regular expression, so
- * `path:C:\dir` stops being a function and becomes literal regex text that no
- * filename matches. Verified: `-r path:<dir> .*` returns 0 while
- * `-path <dir> -r .*` returns the directory's contents. Regex mode therefore
- * switches to the `-path` / `-parent` options, whose values travel through
- * PATH_ARG_ENV so a space-containing path still arrives as one argv element.
+ * 1. A caret-escaped space still splits the argument. `path:C:\Program^ Files`
+ *    reaches es as TWO argv elements, `path:C:\Program` and `Files`, so the
+ *    function is handed a truncated path and the search returns nothing —
+ *    silently. An earlier revision of this plugin relied on es merging those
+ *    back together; it does not.
+ * 2. Under -r the fold-in cannot work at all, because es compiles the entire
+ *    search string as one regular expression and `path:C:\dir` becomes literal
+ *    regex text no filename matches. Measured: `-r "path:<dir> .*"` returns 0
+ *    while `-path <dir> -r ".*"` returns the directory's contents.
+ *
+ * The option route avoids both, but its value may contain spaces and so needs
+ * quotes — and a quote inside this command string is escaped by spawn and then
+ * torn apart by cmd (an in-string -path value of C:\Program Files reaches es
+ * as two argv elements, the first carrying a stray quote). The value therefore
+ * travels through PATH_ARG_ENV, whose contents include the quotes, leaving the
+ * command string itself quote-free.
  *
  * es also parses its option list strictly left to right and is greedy about
  * the search-mode switches: -r (regex) and -i/-w/-p (case/whole-word/
@@ -477,9 +485,8 @@ function resolveQueryScope(
   if (input.matchWholeWord) esArgs.push('-w')
   if (input.matchPath) esArgs.push('-p')
 
-  // Resolve the directory scope. Under -r this becomes a real option (applied
-  // outside the expression) rather than a path:/parent: prefix, because inside
-  // a regex those function names are literal text.
+  // Resolve the directory scope through es options; see buildEsCommand for why
+  // the path: function prefix is never used for the path parameter.
   let query = input.query
   let env: Record<string, string> | undefined
 
@@ -490,26 +497,21 @@ function resolveQueryScope(
   }
 
   if (input.path !== undefined) {
-    const broadContent = isContentSearch(query) && isBroadPath(input.path)
-    if (input.regex) {
-      if (broadContent) {
-        // -parent is non-recursive, matching what the parent: function did.
-        scopeByOption('-parent', restrictToImmediateDir(input.path))
-        input._contentSearchRestricted = true
-      } else {
-        scopeByOption('-path', input.path)
-      }
-    } else if (broadContent) {
-      query = `parent:${restrictToImmediateDir(input.path)} ${query}`
+    if (isContentSearch(query) && isBroadPath(input.path)) {
+      // -parent is non-recursive, matching the parent: function it replaces.
+      scopeByOption('-parent', restrictToImmediateDir(input.path))
       input._contentSearchRestricted = true
     } else {
-      query = `path:${input.path} ${query}`
+      scopeByOption('-path', input.path)
     }
   } else {
-    // Check the query string itself for an inline path: function. Under -r it
-    // is deliberately left alone: the caller wrote a regular expression, and
-    // "path:" inside one is literal text by regex semantics. That also means it
-    // cannot scope a content search, so the guard below still applies.
+    // Check the query string itself for an inline path: function — this is the
+    // caller's own search text, which Everything parses, and it is left as
+    // written. Only the path parameter is lifted into the -path option, so an
+    // inline value containing spaces stays ambiguous (Everything splits it too).
+    // Under -r it is left alone entirely: the caller wrote a regular
+    // expression, and "path:" inside one is literal text by regex semantics.
+    // Either way it cannot scope a content search, so the guard below applies.
     const inlinePath = input.regex ? undefined : extractInlinePath(query)
     if (inlinePath) {
       if (isBroadPath(inlinePath) && isContentSearch(query)) {

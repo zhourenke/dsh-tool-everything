@@ -76,7 +76,7 @@ Once installed, the model can call `everything_search` with any Everything searc
 |-----------|------|----------|---------|-------------|
 | `query` | string | ✅ | — | Everything search query. Supports wildcards (`*`, `?`), `content:`, `size:`, `dm:`, `dc:`, `da:`, `ext:`, `path:`, boolean operators (`\|`, `!`, `<...>`), and Everything search syntax. |
 | `max_results` | number | ❌ | 50 | Maximum results to return (1–100000). Use 100000 for exhaustive searches; prefer narrow queries for speed. |
-| `path` | string | ❌ | — | Restrict search to a directory. Space-containing paths work (`C:\Program Files\MacType`). Implemented via Everything's `path:` function, not es's `-path` flag. **Required when using `content:`** — searches without a path are rejected to prevent the Everything engine from freezing. |
+| `path` | string | ❌ | — | Restrict search to a directory, recursively. Space-containing paths work. Passed as es's `-path` option (or `-parent` for a broad `content:` search), never folded into the query as a `path:` prefix. **Required when using `content:`** — searches without a path are rejected to prevent the Everything engine from freezing. |
 | `regex` | boolean | ❌ | false | Enable regex search mode (`-r`). Note: Everything's regex engine does NOT support `(...)` grouping — use top-level alternation like `.*\.pdf$\|.*\.txt$`. |
 | `match_case` | boolean | ❌ | false | Case-sensitive matching (`-i`). Default is case-insensitive. |
 | `match_whole_word` | boolean | ❌ | false | Match whole words only (`-w`). |
@@ -124,11 +124,16 @@ The query is embedded in one joined `cmd /c` string, with every shell-special ch
 
 Quotes are NEVER used for the query: es passes them through to Everything, where `"..."` means a literal-phrase search and silently returns zero results.
 
-The `path` argument is folded into the query as Everything's `path:` function prefix (`path:C:\Program^ Files\MacType *.ini`). This deliberately avoids es's `-path` flag: a `-path` value containing spaces needs quotes, and Node.js's Windows command-line quoting mangles quotes inside a joined `cmd /c` string (`\"`), breaking cmd. The `path:` function handles space-containing paths correctly after caret-escaping.
+The `path` argument is **never folded into the query** as a `path:` prefix; it is passed as es's `-path` option (or `-parent` for a broad `content:` search). The prefix fold-in used by earlier versions failed in two independent ways, both measured against es 1.1.0.37:
+
+- A space-containing path is split apart even after caret-escaping: `path:C:\Program^ Files` reaches es as **two** argv elements (`path:C:\Program` and `Files`), so the function receives a truncated path and the search silently returns nothing.
+- Under `-r` it cannot work at all: es compiles the entire search string as one regular expression, so `path:C:\dir` degrades into literal text that matches no filename.
+
+The `-path` value may contain spaces and therefore needs quotes — and a quote inside this `cmd /c` string is escaped to `\"` by Node.js and then torn apart by cmd (measured: `-path "C:\Program Files"` reaches es as two argv elements, the first carrying a stray quote). The value is therefore passed through the `EVERYTHING_TOOL_PATH_ARG` environment variable: **the quotes live in the variable's value**, leaving the command string itself free of any quote character.
 
 ### es argument order matters
 
-es parses options strictly left-to-right and is **greedy** about its search-mode switches: `-r` (regex) and `-i`/`-w`/`-p` (case/whole-word/match-path) must be the LAST options, immediately before the query. Any option that follows them (`-size`, `-n`, `-sort`) is consumed as part of the search text and silently returns zero results. The plugin therefore emits columns → `-n` → filters → sort → `-i -w -p` → `-r` → query.
+es parses options strictly left-to-right and is **greedy** about its search-mode switches: `-r` (regex) and `-i`/`-w`/`-p` (case/whole-word/match-path) must be the LAST options, immediately before the query. Any option that follows them (`-size`, `-n`, `-sort`) is consumed as part of the search text and silently returns zero results. The plugin therefore emits columns → `-n` → filters → sort → `-i -w -p` → `-path`/`-parent` → `-r` → query.
 
 ### Output quirks handled
 
@@ -143,7 +148,7 @@ Because Everything maintains a real-time index, searches are **near-instant** ev
 `content:` reads file content through system iFilters, which can freeze Everything while scanning millions of files. The plugin enforces two safeguards:
 
 - **No path → rejected**: `content:` without a `path` parameter (or inline `path:` in the query) is rejected with `ES_FAILED` and a message asking for a narrower scope.
-- **Broad path → auto-restricted**: `content:` targeting a drive root (e.g. `C:\`), the Users tree (`C:\Users`, `C:\Users\AnyUser`), the current home directory, or any of these with wildcard suffixes (e.g. `C:\*`), is restricted to immediate children only via Everything's `parent:` function (one level, no recursion into subdirectories). A warning is shown in the results.
+- **Broad path → auto-restricted**: `content:` targeting a drive root (e.g. `C:\`), the Users tree (`C:\Users`, `C:\Users\AnyUser`), the current home directory, or any of these with wildcard suffixes (e.g. `C:\*`), is restricted to immediate children only via es's `-parent` option (one level, no recursion into subdirectories). A warning is shown in the results.
 
 Always specify a concrete path such as `path:C:\Specific\Folder` when searching file contents. Wildcard patterns like `C:\*` are also considered broad and will be restricted.
 
@@ -158,9 +163,22 @@ Always specify a concrete path such as `path:C:\Specific\Folder` when searching 
 
 ## Known Limitations
 
-- **Everything's regex engine does not support `(...)` grouping** — `.*\.(pdf|txt)$` returns nothing; use `.*\.pdf$|.*\.txt$` instead.
+Everything below is a **measured** boundary, not a guess. Entries marked es 1.1.0.37 were reproduced end to end on that version.
+
+### Query semantics
+
+- **Regex does not support `(...)` grouping** (es 1.1.0.37) — `(dll|exe)$` returns nothing while the equivalent `dll|exe` matches normally. Use an unparenthesised alternation instead, e.g. `.*\.pdf$|.*\.txt$`.
+- **An inline `path:` is inert in regex mode** — with `regex: true` the whole search string is compiled as one regular expression, so `path:` participates as literal text. Use the `path` parameter for that case.
+- **An inline `path:` cannot express a space-containing path** — the space in `path:C:\Program Files\x` is treated by Everything itself as a word separator. Always use the `path` parameter for space-containing paths; it travels as the `-path` option and is not affected.
+- **The total degrades if the recount fails** — when a listing fills the limit the plugin issues one follow-up `es -get-result-count` for the true total; if that query fails, the result is flagged as "there may be more" rather than reporting a number that could be too low.
+
+### Index coverage
+
+- **Hard-linked files may be unsearchable** — package managers such as pnpm install dependencies as hard links, and Everything's live NTFS index **does not pick up newly created hard links**; they appear only after a Force Rebuild in Everything. The symptom is that files inside `node_modules` cannot be found while a freshly created ordinary file in the same directory (e.g. `node_modules\.modules.yaml`) can. Confirmed by a controlled experiment: two files with identical content in one directory, differing only in link count — the one with 1 link was indexed, the one with 4 was not. This is Everything's behaviour (matching reports on the voidtools forum), not a plugin defect.
 - **`es` must be on `PATH`**; the plugin does not probe for a fixed install path.
-- A `path` value containing BOTH spaces and `&|<>^()` shell characters may not be passed exactly; such directory names are extremely rare on Windows.
+
+### Safety guard
+
 - **`content:` requires a `path` parameter** — scanning file contents without a path, or across broad paths (drive roots, the Users tree, user home directories), forces Everything to read every file via system iFilters and freezes the program. The plugin rejects bare `content:` searches as `ES_FAILED` and auto-restricts broad paths to immediate children only.
 
 ## License

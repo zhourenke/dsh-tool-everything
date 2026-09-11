@@ -188,8 +188,9 @@ test('a content: search on a drive root is restricted to immediate children', as
   const result = await tool.execute({ query: 'content:hello', path: 'C:\\' }, execContext())
   const line = commandLine(harness)
 
-  assert.match(line, /parent:C:/, 'broad content search must use parent:')
-  assert.doesNotMatch(line, /path:C:/, 'broad content search must not use path:')
+  assert.match(line, /-parent %EVERYTHING_TOOL_PATH_ARG%/, 'broad content search must use -parent')
+  assert.doesNotMatch(line, /-path /, 'a broad content search must not be scoped recursively')
+  assert.equal(harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG, '"C:"')
   assert.equal(typeof result.warning, 'string')
   assert.ok(result.warning.length > 0)
 })
@@ -199,10 +200,12 @@ test('a content: search on the Users tree is restricted too', async () => {
   const tool = await loadTool(harness)
 
   await tool.execute({ query: 'content:hello', path: 'C:\\Users' }, execContext())
-  assert.match(commandLine(harness), /parent:C:\\Users/)
+
+  assert.match(commandLine(harness), /-parent %EVERYTHING_TOOL_PATH_ARG%/)
+  assert.equal(harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG, '"C:\\Users"')
 })
 
-test('a content: search on a narrow path keeps path: and adds no warning', async () => {
+test('a content: search on a narrow path stays recursive and adds no warning', async () => {
   const harness = createHarness()
   const tool = await loadTool(harness)
 
@@ -211,7 +214,8 @@ test('a content: search on a narrow path keeps path: and adds no warning', async
     execContext(),
   )
 
-  assert.match(commandLine(harness), /path:C:\\Specific\\Folder/)
+  assert.match(commandLine(harness), /-path %EVERYTHING_TOOL_PATH_ARG%/)
+  assert.equal(harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG, '"C:\\Specific\\Folder"')
   assert.equal(result.warning, undefined)
 })
 
@@ -231,8 +235,8 @@ test('the broad-path guard does not apply to a name search', async () => {
   const result = await tool.execute({ query: '*.pdf', path: 'C:\\' }, execContext())
   const line = commandLine(harness)
 
-  assert.match(line, /path:C:\\/)
-  assert.doesNotMatch(line, /parent:/, 'a name search is never depth-restricted')
+  assert.match(line, /-path %EVERYTHING_TOOL_PATH_ARG%/, 'a name search is scoped, just not depth-limited')
+  assert.doesNotMatch(line, /-parent/, 'a name search is never depth-restricted')
   assert.equal(result.warning, undefined)
 })
 
@@ -281,13 +285,14 @@ test('-r is emitted last, immediately before the query', async () => {
 })
 
 // ---------------------------------------------------------------------------
-// Regex mode + path
+// Path scoping
 //
-// Under -r es compiles the WHOLE search string as one regular expression, so a
-// folded-in `path:<dir>` prefix stops being an Everything function and becomes
-// literal regex text that no filename matches — the search returns nothing,
-// silently. Measured against es 1.1.0.37: `-r "path:<dir> .*"` returns 0 while
-// `-path <dir> -r ".*"` returns the directory's contents.
+// The path parameter never becomes a `path:` prefix in the query text. Two
+// measured reasons (es 1.1.0.37): a caret-escaped space still splits the
+// argument, so `path:C:\Program^ Files` arrives as TWO argv elements and the
+// function gets a truncated path; and under -r the whole search string is one
+// regular expression, so `path:<dir>` is literal text that matches nothing.
+// Either way the search returned nothing, silently.
 // ---------------------------------------------------------------------------
 
 test('regex mode scopes through the -path option, not a path: prefix', async () => {
@@ -338,19 +343,36 @@ test('regex mode restricts a broad content search with -parent', async () => {
   assert.ok(result.warning, 'a restricted content search still warns')
 })
 
-test('a non-regex path still folds into the path: function', async () => {
+test('the path parameter always goes through the -path option', async () => {
   const harness = createHarness()
   const tool = await loadTool(harness)
 
   await tool.execute({ query: '*.ts', path: 'C:\\proj' }, execContext())
   const line = commandLine(harness)
 
-  assert.ok(line.includes('path:C:\\proj'), `expected the path: prefix, got: ${line}`)
+  assert.match(line, /-path %EVERYTHING_TOOL_PATH_ARG%/)
+  assert.ok(!line.includes('path:C:\\proj'), 'the path must not be folded into the query text')
+  assert.equal(harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG, '"C:\\proj"')
+})
+
+test('a space-containing path works outside regex mode too', async () => {
+  // This mode used to fold the path in as a `path:` prefix with caret-escaped
+  // spaces, which still split into separate argv elements: es received
+  // ["path:C:\Program", "Files\Internet", "Explorer", "*.exe"], handed the
+  // path function a truncated path, and returned nothing -- silently.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '*.exe', path: 'C:\\Program Files\\Internet Explorer' }, execContext())
+  const line = commandLine(harness)
+
+  assert.match(line, /-path %EVERYTHING_TOOL_PATH_ARG%/)
   assert.equal(
-    harness.spawnCalls[0].env,
-    undefined,
-    'the environment indirection is only needed where a quote cannot go',
+    harness.spawnCalls[0].env.EVERYTHING_TOOL_PATH_ARG,
+    '"C:\\Program Files\\Internet Explorer"',
+    'the value must arrive as one argv element, which only the quoted env route achieves',
   )
+  assert.ok(!line.includes('"'), 'and the command string itself must stay quote-free')
 })
 
 // ---------------------------------------------------------------------------
