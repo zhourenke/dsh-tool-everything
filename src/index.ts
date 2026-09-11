@@ -880,22 +880,32 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
     name: 'tool:everything_search',
     order: resolveSectionOrder(ctx),
     text:
-      'everything_search: Windows file search via Everything engine (es.exe). Supports full Everything syntax — ' +
-      'wildcards (* ?), boolean operators (| ! <...>), functions (content:, size:, dm:, dc:, da:, ext:, path:). ' +
-      'Returns numbered results with optional metadata.\n\n' +
-      '⚠️ content: requires a path parameter. Without one the search freezes Everything (scans every file ' +
-      'via system iFilters) and the plugin rejects it with an error. Broad paths (drive root, Users tree, ' +
-      'user home) auto-restrict to immediate children only — use a narrower path for recursive content search.',
+      'everything_search — whole-disk file search on Windows via Everything (es.exe); NOT scoped to the ' +
+      'workspace. Filename and metadata queries are served from its index; content: queries read file ' +
+      'contents, which is why content: needs a narrow scope (below). Syntax: wildcards (* ?), boolean logic ' +
+      '(| !), <a|b> grouping, quoted phrases, and the functions size:, dm:, dc:, da:, ext:, path:, attributes:, ' +
+      'content:. Output is a numbered list of [i] path [metadata]; metadata is attached only for the fields ' +
+      'you request via include_* (size, modified, created, accessed, ext, attributes). "Found N" is the TRUE ' +
+      'match count, obtained by a separate count pass — NOT the number of rows listed; "(showing first M)" ' +
+      'means max_results (default 50, max 100000) capped the list. Prefer glob/grep for workspace-scoped path ' +
+      'and content search; use this tool for paths outside the workspace, disk-wide sweeps, and metadata ' +
+      'queries.\n\n' +
+      '⚠️ content: REQUIRES a scope — the path parameter, or an inline path: in the query. With neither, the ' +
+      'call is rejected outright and no search runs at all, so retrying it unchanged cannot help.\n' +
+      '⚠️ content: a scope is too wide only if it is a drive root (C:\\), C:\\Users or exactly one level under ' +
+      'it, C:\\Documents and Settings likewise, or exactly your home directory. Such a scope is silently ' +
+      'narrowed to immediate children — one level, NOT recursive — and the result carries a warning; pass a ' +
+      'deeper path to search recursively. Any deeper path, including your workspace, recurses normally.',
   })
 
   const tool = defineTool({
     name: 'everything_search',
     description:
-      'Search files on Windows using the Everything search engine (via es.exe). ' +
-      'Supports the full Everything search syntax including wildcards (*, ?), ' +
-      'size:, dm:, dc:, ext:, path:, content: and other search functions. ' +
-      'Returns results as a numbered list with file paths and optional metadata (size, dates). ' +
-      'Results are capped at max_results (default 50, max 100000).',
+      'Search files on Windows using the Everything search engine (via es.exe), across the whole disk ' +
+      'rather than the workspace alone. Supports the full Everything search syntax including wildcards ' +
+      '(*, ?), boolean operators (| !), <a|b> grouping, and the functions size:, dm:, dc:, da:, ext:, ' +
+      'path:, attributes:, content:. Returns a numbered list of paths, each carrying the metadata you ' +
+      'request via include_*. Results are capped at max_results (default 50, max 100000).',
     parameters: {
       query: {
         type: 'string',
