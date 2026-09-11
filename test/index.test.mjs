@@ -195,6 +195,20 @@ test('a content: search on a drive root is restricted to immediate children', as
   assert.ok(result.warning.length > 0)
 })
 
+test('the restriction warning names no internal mechanism', async () => {
+  // The restriction is applied through es's -parent option when the path came
+  // from the path parameter, but through Everything's parent: function when it
+  // was written inline — so a message naming either one is wrong for the other.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: 'content:hello', path: 'C:\\' }, execContext())
+
+  assert.doesNotMatch(result.warning, /parent:/, 'the warning must not name a mechanism that varies by branch')
+  assert.match(result.warning, /immediate children/)
+  assert.match(result.warning, /narrower path/)
+})
+
 test('a content: search on the Users tree is restricted too', async () => {
   const harness = createHarness()
   const tool = await loadTool(harness)
