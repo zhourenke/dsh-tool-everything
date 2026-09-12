@@ -137,7 +137,7 @@ dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 ## 配置
 
 | 键 | 默认 | 说明 |
-|---|---|:---:|---|
+|---|---|---|
 | `timeoutMs` | 1200000 | 单次搜索超时（毫秒） |
 | `graceMs` | 3000 | 超时后终止进程的宽限（毫秒） |
 | `stderrMaxBytes` | 65536 | 报错时截取的 stderr 上限（字节） |

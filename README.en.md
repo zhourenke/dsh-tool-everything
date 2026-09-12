@@ -23,7 +23,7 @@ Should print the ES help text.
 ## Installation
 
 ```powershell
-dsh plugin --profile web add "github:zhourenke/dsh-agent-rate-limit"
+dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
 ```
 
 This installs the package from GitHub, detects the `dsh.bundle` declaration, and automatically registers it as a profile layer. Restart DSH to activate.
@@ -31,7 +31,7 @@ This installs the package from GitHub, detects the `dsh.bundle` declaration, and
 To uninstall:
 
 ```powershell
-dsh plugin --profile web remove @zhourenke/dsh-agent-rate-limit
+dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 ```
 
 ### Verify the installation
