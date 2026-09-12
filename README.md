@@ -2,23 +2,32 @@
 
 # @zhourenke/dsh-tool-everything
 
-**模型可调用的 Everything 搜索工具** — `everything_search` — 基于 **es.exe**（Everything 命令行客户端），在 Windows 上实现极速文件搜索。
+**为 DSH 模型提供 `everything_search` 工具：基于 Everything 的全盘极速文件搜索。**
 
-利用 voidtools 的 [Everything](https://www.voidtools.com/) 搜索引擎，在 NTFS 卷上实现近乎即时的文件搜索，支持完整的 Everything 搜索语法。
+在 Windows 上调用 voidtools [Everything](https://www.voidtools.com/) 的索引，毫秒级搜遍整个磁盘（不局限于工作区），支持完整的 Everything 搜索语法（通配符、布尔、`size:`、`content:` 全文等）。
+
+## 它擅长什么
+
+- **全盘搜索**：给个名字片段、类型、大小、日期就能定位文件
+- **全文检索**：`content:` 按文件内容找文件（需限定目录，见下文）
+- **元数据**：可一并返回大小、创建/修改/访问时间、扩展名、属性
+- **快**：Everything 常驻后台维护 NTFS 索引，查询是索引查找，不是目录扫描
 
 ## 前置条件
 
-- **Windows**（NTFS 卷）
-- **[Everything](https://www.voidtools.com/)** by voidtools（免费，已安装并运行）
-- **es.exe** — Everything 自带的命令行客户端，也可[单独下载](https://www.voidtools.com/downloads/)。必须能在 `PATH` 中找到。
+| 需要 | 说明 |
+|---|---|
+| Windows | NTFS 卷（Everything 的索引基于 NTFS） |
+| Everything | voidtools 官方免费软件，需**安装并运行** |
+| es.exe | Everything 的命令行客户端，需在 `PATH` 中 |
 
-验证安装：
+验证：
 
 ```powershell
 es -h
 ```
 
-应显示 ES 帮助信息。
+能看到 ES 帮助信息即就绪。
 
 ## 安装
 
@@ -26,163 +35,118 @@ es -h
 dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
 ```
 
-此命令从 GitHub 下载包，自动检测 `dsh.bundle` 声明并注册为 profile 层。重启 DSH 后生效。
-
-卸载：
+重启 DSH 后生效，模型即可调用 `everything_search`。卸载：
 
 ```powershell
 dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 ```
 
-### 验证安装
+## 快速上手
 
-重启 DSH 后，让模型列出可用工具，或直接让它搜索一个已知文件。
+在模型会话里直接说人话即可，例如：
 
-## 兼容性
+- 「找 D 盘下 1GB 以上的文件」→ `query: size:>1gb`，`path: D:\`
+- 「找 Projects 里包含 TODO 的文本文件」→ `query: content:TODO`，`path: C:\Projects`
+- 「找 2024 年 7 月改过的所有 PDF」→ `query: *.pdf dm:2024-07-01..2024-07-31`
 
-已在 **DSH v0.1.5-rc.1**（2026 年 9 月）版本下测试通过。插件依赖以下运行时包：
+## 搜索语法速查
 
-- `@deepseek-ai/schemastery`（配置校验）
-- `@deepseek-ai/cordis`（插件框架）
-- `@deepseek-ai/dsh-tools`（工具定义）
-- `@deepseek-ai/dsh-llm`（LLM 错误类型）
-- `@deepseek-ai/dsh-subprocess`（子进程接口）
-- `@deepseek-ai/dsh-system-prompt`（系统提示词段落注册）
+`everything_search` 直接接受 [Everything 搜索语法](https://www.voidtools.com/support/everything/searching/)。常用写法：
 
-安装依赖后即可在相应版本的 DSH 中使用。
+| 想找 | 查询 |
+|---|---|
+| 某类文件 | `*.pdf` |
+| 名称含关键词 | `report* 2024`（多个词 = 都要满足） |
+| 任一类（OR） | `*.pdf \| *.txt` |
+| 排除 | `!*.tmp` |
+| 分组 | `<*.mp3 \| *.flac>` |
+| 按大小 | `size:>1gb`、`size:500mb..2gb` |
+| 按时间 | `dm:2024-01-01..2024-12-31`、`dm:today`（`dm:` 修改 / `dc:` 创建 / `da:` 访问，写法相同） |
+| 按路径 | `path:C:\Projects ext:ts`（**路径含空格请用 `path` 参数**） |
+| 按属性 | `attributes:H` 隐藏文件、`attributes:D` 文件夹 |
+| 精确短语 | `"quarterly report"` |
+| 全文内容 | `content:TODO`（必须配合范围，见下） |
 
-本插件以 git 分发（路线 A）：编译产物 `lib/`（含类型声明 `lib/types/`）已随源码一并提交，因此上面的一条命令即可安装，无需本地构建，也不依赖 `prepare` 脚本。
+注意：Everything 的正则模式**不支持 `(...)` 分组**，请用顶层或运算，如 `.*\.pdf$|.*\.txt$`。
 
-## 使用方法
+## 参数
 
-安装后，模型可以调用 `everything_search` 并传入任何 Everything 搜索查询：
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|:---:|---|
+| `query` | string | — | 必填。Everything 搜索查询。 |
+| `path` | string | — | 只在这个目录（含子目录）里搜；含空格的路径用它最可靠；**`content:` 搜索建议必填**。 |
+| `max_results` | number | 50 | 最多返回多少条（1–100000）。要全量用 100000；一般查询用默认即可。 |
+| `sort_by` | string | 相关度/名称 | `name`、`path`、`size`、`extension`、`date-created`、`date-modified`、`date-accessed`。 |
+| `sort_desc` | boolean | false | 配合 `sort_by` 降序。 |
+| `regex` | boolean | false | 正则模式；不支持 `(...)` 分组。 |
+| `match_case` | boolean | false | 区分大小写。 |
+| `match_whole_word` | boolean | false | 整词匹配。 |
+| `match_path` | boolean | false | 在完整路径上匹配，而不只是文件名。 |
+| `file_only` | boolean | false | 只要文件（排除文件夹）。 |
+| `folder_only` | boolean | false | 只要文件夹（排除文件）。 |
+| `attributes` | string | — | 属性过滤，DIR 风格：`R` 只读、`H` 隐藏、`S` 系统、`D` 目录、`A` 归档；`-` 前缀表示排除（`"R-H"` = 只读且非隐藏）；可组合（`"RHS"` = 只读+隐藏+系统）。 |
+| `include_size` | boolean | false | 返回大小（字节）。 |
+| `include_date_modified` | boolean | false | 返回最后修改时间。 |
+| `include_date_created` | boolean | false | 返回创建时间。 |
+| `include_date_accessed` | boolean | false | 返回最后访问时间。 |
+| `include_path` | boolean | false | 返回完整路径。 |
+| `include_extension` | boolean | false | 返回扩展名。 |
+| `include_attributes` | boolean | false | 返回属性字母串（如 `A`、`HS`）。 |
 
-### 示例
+## 结果长什么样
 
-| 查询 | 说明 |
-|------|------|
-| `*.pdf` | 所有 PDF 文件 |
-| `report* 2024` | 文件名以 "report" 开头且包含 "2024" 的文件 |
-| `size:>1gb` | 大于 1GB 的文件 |
-| `dm:2024-01-01..2024-12-31` | 2024 年内修改过的文件 |
-| `ext:txt content:hello` | 包含 "hello" 的文本文件 |
-| `C:\Projects\* ext:ts` | C:\Projects 下的 TypeScript 文件 |
-| `*.jpg dc:2024-06-01` | 2024 年 6 月 1 日创建的 JPEG 图片 |
-| `!hidden` | 排除隐藏文件 |
+返回 `total`（匹配总数）、`truncated`（是否可能还有更多）、`results[]`。每条结果：
 
-### 参数
+- `path`：完整路径（日期、属性等已格式化为可读形式）；**文件夹以 `\` 结尾**
+- 请求的元数据：`size`（字节整数）、`date_modified` / `date_created` / `date_accessed`（`2026-01-02 03:04:05` 式）、`extension`（有扩展名返回如 `js`；无扩展名文件返回 `""`；**文件夹不输出该字段**）、`attributes`（字母串）
+- `warning`：内容搜索范围被自动收窄时出现——**读到它就说明结果不完整，应改用更具体的目录**
 
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|:----:|:------:|------|
-| `query` | string | ✅ | — | Everything 搜索查询。支持通配符（`*`、`?`）、`content:`、`size:`、`dm:`、`dc:`、`da:`、`ext:`、`path:`、布尔运算符（`\|`、`!`、`<...>`）及 Everything 搜索语法。 |
-| `max_results` | number | ❌ | 50 | 最大返回结果数（1–100000）。需要穷举搜索时用 100000；一般建议用更窄的查询以保证速度。 |
-| `path` | string | ❌ | — | 限制搜索目录（递归）。含空格的路径可用。作为 es 的 `-path` 选项传递（广域 `content:` 搜索则用 `-parent`），不折叠进查询作为 `path:` 前缀。**使用 `content:` 时必须提供此参数**——无路径的 content 搜索会被拒绝，以防 Everything 引擎卡死。 |
-| `regex` | boolean | ❌ | false | 启用正则搜索模式（`-r`）。注意：Everything 正则引擎**不支持 `(...)` 分组**——请用顶层交替，如 `.*\.pdf$\|.*\.txt$`。 |
-| `match_case` | boolean | ❌ | false | 区分大小写匹配（`-i`）。默认不区分。 |
-| `match_whole_word` | boolean | ❌ | false | 仅匹配完整单词（`-w`）。 |
-| `match_path` | boolean | ❌ | false | 匹配完整路径（`-p`）。 |
-| `file_only` | boolean | ❌ | false | 仅搜索文件，排除文件夹（`/a-d`）。 |
-| `folder_only` | boolean | ❌ | false | 仅搜索文件夹，排除文件（`/ad`）。 |
-| `sort_by` | string | ❌ | — | 排序字段：`name`、`path`、`size`、`extension`、`date-created`、`date-modified`、`date-accessed`。 |
-| `sort_desc` | boolean | ❌ | false | 设置 `sort_by` 后降序排序。 |
-| `attributes` | string | ❌ | — | 属性过滤器，DIR 风格。字母含义：`R` 只读、`H` 隐藏、`S` 系统、`D` 目录、`A` 归档、`V` 设备、`N` 普通、`T` 临时、`L` 重解析点、`C` 压缩、`O` 离线、`I` 未索引内容、`E` 加密。前缀 `-` 表示排除：`"R-H"` = 只读且非隐藏。组合：`"RHS"` = 只读、隐藏且系统。 |
-| `include_size` | boolean | ❌ | false | 显示文件大小。 |
-| `include_date_modified` | boolean | ❌ | false | 显示最后修改日期（`dm`）。 |
-| `include_date_created` | boolean | ❌ | false | 显示创建日期（`dc`）。 |
-| `include_date_accessed` | boolean | ❌ | false | 显示最后访问日期（`da`）。 |
-| `include_path` | boolean | ❌ | false | 显示完整路径**和**文件名（es `-full-path-and-name`）。 |
-| `include_extension` | boolean | ❌ | false | 显示文件扩展名。 |
-| `include_attributes` | boolean | ❌ | false | 显示文件属性，DIR 风格字母（`A`、`HS`、`HSD` 等）。 |
+默认同时匹配文件与文件夹；结果数顶到 `max_results` 时，插件会自动补一次计数查询把 `total` 取准。
 
-## 配置
+## 内容搜索（content:）的规则
 
-| 键 | 默认值 | 说明 |
-|-----|:------:|------|
-| `timeoutMs` | `1200000` | 工具调用的超时时间（毫秒）。 |
-| `graceMs` | `3000` | 超时后的进程终止宽限期（毫秒）。 |
-| `stderrMaxBytes` | `65536` | 错误输出诊断截取上限（字节）。 |
-| `rawOutputMaxBytes` | `20000000` | 标准输出解析上限（字节）。 |
+`content:` 全文搜索会遍历文件内容，范围过大可能卡死 Everything，因此有硬性护栏：
 
-## 工作原理
+- **必须限定范围**：通过 `path` 参数，或查询内联 `path:...`，二选一。完全没有范围会被**直接拒绝**。
+- **广域范围会被收窄**：对驱动器根目录（`C:\`）、`C:\Users`（及其下一层）、`C:\Documents and Settings`（同理）、当前用户主目录搜索时，自动降级为**只搜直接子级（一层，不递归）**，并在 `warning` 中说明。
+- **推荐**：搜内容时给具体目录，例如 `content:secret_key` + `path: C:\Projects\MyApp`。
 
-1. 模型调用 `everything_search`，传入查询和可选参数。
-2. 插件通过 DSH 子进程接口执行 `cmd /c chcp 65001>nul & es -json ...`。
-3. `es.exe` 查询 Everything 服务（已索引所有 NTFS 卷），返回 JSON 格式结果。
-4. 插件解析 JSON，转换 FILETIME 日期和属性位掩码，格式化结果并返回给模型。
+## 给 Agent 的调用要点
 
-### 为什么用 `cmd /c chcp 65001`？
-
-在中文 Windows（及其他 CJK 区域）上，`es.exe` 按系统 ANSI 代码页（GB2312/CP936）输出文件名，而 DSH 子进程接口按 UTF-8 解码子进程 stdout——所有非 ASCII 路径都会乱码。`chcp 65001` 在 es 运行前把控制台代码页切到 UTF-8，es 输出 UTF-8 字节即可正确解码。已端到端验证：不加它时，`D:\驱动镜像` 会变成 `D:\`。
-
-### 转义策略
-
-查询被嵌入到一条 `cmd /c` 命令字符串中，所有 shell 特殊字符（**包括空格**）都用 caret（`^`，cmd 的转义符）转义：
-
-- `size:>1gb` → `size:^>1gb`（不会被当作重定向）
-- `*.pdf | *.txt` → `*.pdf^ ^|^ *.txt`（保持一次 OR 搜索，不是管道）
-- `Windows11 25H2.iso` → `Windows11^ 25H2.iso`（保持多词查询）
-
-查询**绝不用引号**：es 会把引号原样传给 Everything，其中 `"..."` 表示精确短语搜索，会静默返回 0 结果。
-
-**`path` 参数不折叠进查询**，而是作为 es 的 `-path` 选项传递（广域 `content:` 搜索则用 `-parent`）。早期版本使用的 `path:` 前缀折叠有两种失败方式，均已在 es 1.1.0.37 上实测：
-
-- 含空格的路径即使做了 caret 转义仍会被拆开：`path:C:\Program^ Files` 送达 es 时是**两个** argv 元素（`path:C:\Program` 与 `Files`），`path:` 函数只拿到被截断的路径，静默返回 0 结果。
-- 正则模式下更彻底：`-r` 会把整个搜索串当作一条正则编译，`path:C:\dir` 退化为字面文本，任何文件名都匹配不上。
-
-`-path` 选项的取值可能含空格因而需要引号，而引号放在这条 `cmd /c` 字符串里会被 Node.js 转义成 `\"`、再被 cmd 拆散（实测 `-path "C:\Program Files"` 送达 es 时第一个元素还带着多余的引号）。所以取值通过环境变量 `EVERYTHING_TOOL_PATH_ARG` 传递：**引号存放在环境变量的值中**，命令字符串本身不含任何引号字符。
-
-### es 参数顺序很关键
-
-es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的：`-r`（正则）和 `-i`/`-w`/`-p`（大小写/全词/匹配路径）必须是**最后一个选项**，紧跟查询之前。任何出现在它们之后的选项（`-size`、`-n`、`-sort`）都会被当作搜索文本的一部分，静默返回 0 结果。因此插件按 显示列 → `-n` → 过滤 → 排序 → `-i -w -p` → `-path`/`-parent` → `-r` → 查询 的顺序构造命令。
-
-### 已处理的输出怪癖
-
-- `-size` 与 `-r` 组合时，es 会把 JSON 多包一层数组（`[[{...}]]`）；解析器会解开一层。
-- `-attribs` 输出数字位掩码（32 = 归档）；插件会转换为 DIR 风格字母（`A`、`HS`、`HSD` 等）。
-- FILETIME 日期（自 1601 年起 100 纳秒间隔）会转换为 ISO-8601 格式。
-
-由于 Everything 维护实时索引，即使跨数百万个文件，搜索也**近乎即时**——对于大范围搜索，比文件系统的 `glob` 或 `grep` 快得多。
-
-### Content 搜索安全保护
-
-`content:` 通过系统 iFilter 读取文件内容，在扫描数百万文件时会卡死 Everything。插件提供两层保护：
-
-- **无路径 → 拒绝**：`content:` 未附带 `path` 参数（或 query 中未包含 `path:`）时，插件拒绝搜索并返回 `ES_FAILED`，提示模型缩小范围。
-- **广域路径 → 自动限制**：`content:` 针对驱动器根目录（如 `C:\`）、Users 树（`C:\Users`、`C:\Users\任意用户名`）、当前用户主目录，或这些路径的通配符变体（如 `C:\*`）时，自动通过 es 的 `-parent` 选项限制为仅搜索直接子级（一层深度，不递归子目录），并在结果中附加警告。
-
-使用 `content:` 时请务必指定具体路径，如 `path:C:\Specific\Folder`。通配符模式 `C:\*` 也会被识别为广域路径并受到限制。
+- 工具名 `everything_search`；**全盘搜索**，不受工作区限制
+- 默认最多 50 条、默认包含文件夹；要全量用 `max_results: 100000`，只要文件用 `file_only: true`
+- 目录以 `\` 结尾且没有 `extension`，凭这两点区分文件与文件夹
+- 读到 `warning` 就调整：内容搜索范围被收窄了
+- 搜内容必须先给一个具体目录
 
 ## 错误码
 
-| 错误码 | 说明 |
-|--------|------|
-| `ES_NOT_FOUND` | `cmd` 或 `es` 命令未安装或不在 PATH 中。 |
-| `ES_FAILED` | 命令执行失败（非零退出码、启动失败、输出格式错误）。未提供 `path` 参数的 content 搜索也会被拒绝，返回此错误码。 |
-| `ES_RAW_OUTPUT_OVERFLOW` | 输出超出捕获上限；请缩小查询范围。 |
-| `ES_ABORTED` | 工具调用被中止（超时或取消）。 |
+| 错误码 | 含义 |
+|---|---|
+| `ES_NOT_FOUND` | `es` 或 `cmd` 不可用（Everything 未安装 / es.exe 不在 PATH） |
+| `ES_FAILED` | 执行失败（例如无范围的 `content:` 被拒绝） |
+| `ES_RAW_OUTPUT_OVERFLOW` | 输出过大；请缩小查询范围 |
+| `ES_ABORTED` | 调用被中止（超时或取消） |
 
-## 已知限制
+## 已知限制（实测确认）
 
-以下均为**实测确认**的边界，而非推测。标注 es 1.1.0.37 的条目已在该版本上端到端复现。
+- **Everything 未运行时**搜索失败——先启动 Everything。
+- **硬链接文件可能搜不到**：Everything 的实时索引不收录新建的硬链接（pnpm 等包管理器装进 `node_modules` 的文件会这样），在 Everything 中执行 Force Rebuild 后出现。属 Everything 自身行为，非插件缺陷。
+- **正则不支持分组**；**内联 `path:` 不支持含空格的路径**（含空格一律用 `path` 参数）。
 
-### 查询语义
+## 配置
 
-- **正则不支持 `(...)` 分组**（es 1.1.0.37）——`(dll|exe)$` 返回空，而同样语义的 `dll|exe` 正常命中。请改用不带括号的或运算，例如 `.*\.pdf$|.*\.txt$`。
-- **正则模式下内联的 `path:` 不生效**——`regex: true` 时整个搜索串被编译为一条正则，`path:` 按字面文本参与匹配。此场景请使用 `path` 参数。
-- **内联 `path:` 无法表达含空格的路径**——`path:C:\Program Files\x` 里的空格会被 Everything 自身当作词分隔。含空格的路径请一律使用 `path` 参数（该参数走 `-path` 选项，不受此限）。
-- **总数在补查失败时会降级**——列表满额时插件补发一次 `es -get-result-count` 取真实总数；若该次查询失败，则标记为「可能有更多结果」，而不会给出一个可能偏低的数字。
+| 键 | 默认 | 说明 |
+|---|---|:---:|---|
+| `timeoutMs` | 1200000 | 单次搜索超时（毫秒） |
+| `graceMs` | 3000 | 超时后终止进程的宽限（毫秒） |
+| `stderrMaxBytes` | 65536 | 报错时截取的 stderr 上限（字节） |
+| `rawOutputMaxBytes` | 20000000 | 输出解析上限（字节） |
 
-### 索引覆盖
+## 兼容性
 
-- **硬链接文件可能搜不到**——pnpm 等包管理器用硬链接安装依赖，而 Everything 的实时 NTFS 索引**不收录新建的硬链接**，需在 Everything 中执行 Force Rebuild 后才会出现。表现为 `node_modules` 内的文件搜不到，而同一目录下新生成的普通文件（如 `node_modules\.modules.yaml`）可以搜到。已用对照实验确认：同目录下内容相同、仅链接数不同的两个文件，1 链接的被索引，4 链接的未被索引。这是 Everything 侧的行为（voidtools 论坛有同类报告），非插件缺陷。
-- **`es` 必须在 `PATH` 中**——插件不探测固定安装路径。
-
-### 安全护栏
-
-- **`content:` 必须搭配 `path` 参数使用**——无路径的 content 搜索（或在驱动器根目录、Users 树、用户主目录等广域路径上搜索）会让 Everything 通过系统 iFilter 读取每个文件，导致程序卡死。插件会拒绝裸 `content:` 搜索（返回 `ES_FAILED`），并自动将广域路径限制为仅搜索直接子级。
+在 **DSH v0.1.5-rc.1**（2026-09）下测试通过。
 
 ## 许可证
 
 MIT
-
-已通过 DSH v0.1.5-rc.1 测试。
