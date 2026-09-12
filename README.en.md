@@ -35,7 +35,9 @@ If it prints the ES help text, you're ready.
 dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
 ```
 
-Restart DSH, and the model can call `everything_search`. To uninstall:
+Restart DSH, and the model can call `everything_search`. 
+
+To uninstall:
 
 ```powershell
 dsh plugin --profile web remove @zhourenke/dsh-tool-everything

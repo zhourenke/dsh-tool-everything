@@ -35,7 +35,9 @@ es -h
 dsh plugin --profile web add "github:zhourenke/dsh-tool-everything"
 ```
 
-重启 DSH 后生效，模型即可调用 `everything_search`。卸载：
+重启 DSH 后生效，模型即可调用 `everything_search`。
+
+卸载：
 
 ```powershell
 dsh plugin --profile web remove @zhourenke/dsh-tool-everything
