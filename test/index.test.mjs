@@ -181,6 +181,22 @@ test('a content: search with no path is rejected before es is spawned', async ()
   assert.equal(harness.spawnCalls.length, 0, 'a rejected search must never spawn es')
 })
 
+test('a present-but-empty path is rejected before es is spawned', async () => {
+  // The contract is "absent means no restriction", so sending "" (or whitespace)
+  // is a caller bug, not a request for a whole-disk search. Both shapes must be
+  // rejected by the same guard, and neither may reach es.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  for (const badPath of ['', '   ']) {
+    await assert.rejects(
+      () => tool.execute({ query: '*playwright*', path: badPath }, execContext()),
+      /path must be a non-empty string when given/,
+    )
+  }
+  assert.equal(harness.spawnCalls.length, 0, 'a rejected search must never spawn es')
+})
+
 test('a content: search on a drive root is restricted to immediate children', async () => {
   const harness = createHarness()
   const tool = await loadTool(harness)
