@@ -36,7 +36,7 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 
 同时确保 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 里包含 `@zhourenke/dsh-tool-everything`。卸载开发连接点要**手动**删连接点并从 `bundles` 移除——`dsh plugin remove` 对连接点安装无效（pnpm 报 `ERR_PNPM_CANNOT_REMOVE_MISSING_DEPS`）。
 
-实测教训（2026-09，详见工作区指南 §6.1）：
+实测教训（2026-09，详见工作区指南「连接点安装 ≠ 正式安装」）：
 
 - **改了代码必须重启 DSH** 才生效——运行中的进程已把旧 `lib/` 载入模块缓存。判断"加载了没有"，以会话记录里最新一轮 `request/header` 的工具表为准，**不以"没报错"为准**（名字从 `bundles` 移除后 profile 照常启动、插件静默不存在）。
 - **`bundles` 里列了名字但解析目标不存在 = 整个 profile 启动失败**（硬失败）。报错只有一句 `cannot resolve profile bundle ... from the dsh installation or <profileDir>`，措辞会把人引向"依赖没装"，真实原因是解析目标没了。
