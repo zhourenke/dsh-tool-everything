@@ -147,7 +147,7 @@ Files and folders are matched by default; when the listing fills `max_results`, 
 
 ## Compatibility
 
-Plugin version **0.1.7-rc2.1** is the first release targeting **DSH v0.1.7-rc.2** (`0.1.7-rc2.<n>` counts plugin releases built for that host); tested with v0.1.7-rc.2 (September 2026), and its peer dependencies declare that host version only.
+Tested with v0.1.7-rc.2 (September 2026).
 
 ## License
 

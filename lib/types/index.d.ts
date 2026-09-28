@@ -9,28 +9,9 @@
  * @module @zhourenke/dsh-tool-everything
  */
 import z from '@deepseek-ai/schemastery';
-import { HarnessError } from '@deepseek-ai/dsh-llm';
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
 import type { PromptSection } from '@deepseek-ai/dsh-system-prompt';
-/** Default max results to return. */
-declare const DEFAULT_MAX_RESULTS = 50;
-/** Maximum allowed max_results (safety cap). */
-declare const ABSOLUTE_MAX_RESULTS = 100000;
-/** Default cooperative tool-call timeout budget in milliseconds. */
-declare const DEFAULT_TIMEOUT_MS = 1200000;
-/** Default terminate grace period for the `es` process (ms). */
-declare const DEFAULT_GRACE_MS = 3000;
-/** Default cap in bytes on the retained stderr tail. */
-declare const DEFAULT_STDERR_MAX_BYTES: number;
-/** Default cap in bytes on the raw stdout the tool will parse. */
-declare const DEFAULT_RAW_OUTPUT_MAX_BYTES = 20000000;
-/** Error codes for `everything_search` failures. */
-type EverythingErrorCode = 'ES_NOT_FOUND' | 'ES_FAILED' | 'ES_RAW_OUTPUT_OVERFLOW' | 'ES_ABORTED';
-/** Typed search failure extending HarnessError. */
-declare class EverythingError extends HarnessError {
-    code: EverythingErrorCode;
-    constructor(message: string, code: EverythingErrorCode, options?: ErrorOptions);
-}
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 /** Plugin configuration after schemastery defaulting (fields stay optional so the coalescing below is honest). */
 interface EverythingConfig {
     timeoutMs?: number;
@@ -45,10 +26,9 @@ interface HostContext {
         /** Central placement of a registered section, or undefined for an unknown name. */
         getSectionOrder(name: string): number | undefined;
     };
+    /** The host's own `ToolDefinition`, so a tool shape that drifts fails `tsc`. */
     tools: {
-        register(definition: {
-            name: string;
-        }): unknown;
+        register(definition: ToolDefinition): unknown;
     };
     subprocess: {
         spawn(spec: SubprocessSpawnSpec): SubprocessHandle;
@@ -61,19 +41,31 @@ declare const inject: string[];
 /**
  * Plugin configuration schema.
  *
- * The `as unknown as ReturnType<typeof z.any>` widening is required, not
- * cosmetic: schemastery 3.18.4 (the copy DSH 0.1.7-rc.2 resolves for us) makes
- * the inferred type of `z.object({...})` unnameable from an exported declaration
- * (`TS2883: The inferred type of 'Config' cannot be named without a reference to
- * 'Schema'`), while annotating it directly fails on `Schema`'s variance
- * (`TS2322`). Erasing to the default export's return type keeps the declaration
- * portable, and matches the other plugins in this workspace.
+ * The `as unknown as ReturnType<typeof z.any>` widening keeps this exported
+ * declaration portable, and the three forms were measured rather than guessed:
+ *
+ * - Exporting the schema as-is (`const Config = configSchema`) is the form to
+ *   try first. It compiles while this package and the host resolve the SAME
+ *   schemastery copy (measured after pinning `~3.18.4`, the line every DSH
+ *   0.1.7-rc.2 package declares), and it goes red the moment the two copies
+ *   split (`TS2883: The inferred type of 'Config' cannot be named without a
+ *   reference to 'Schema'`) — which is a signal to re-decide, not a bug.
+ * - Annotating it directly fails either way: `Schema`'s `data` parameter is
+ *   contravariant, so `Schema<ObjectS<…>>` is not assignable to
+ *   `Schema<unknown, unknown, 'plain'>` (`TS2322`).
+ * - Widening through the double assertion always compiles, at the cost of not
+ *   checking the export at all.
+ *
+ * The assertion is kept because the split is something the host can cause on
+ * its own schedule (a DSH upgrade to a new schemastery line), and the emitted
+ * declaration then stays portable instead of turning a dependency bump into a
+ * build break. PLUGIN_RELEASE_GUIDE.md 「DSH 升级后的复核」 greps for exactly
+ * this expression, so do not delete it as a redundant cast.
  * @see PLUGIN_RELEASE_GUIDE.md 「类型定义原则」
  */
 declare const Config: ReturnType<typeof z.any>;
 /**
  * Register the `everything_search` tool.
  */
-declare function apply(ctx: HostContext, config: EverythingConfig): Promise<void>;
+declare function apply(ctx: HostContext, config: EverythingConfig): void;
 export { apply, Config, inject, name };
-export { EverythingError, DEFAULT_MAX_RESULTS, ABSOLUTE_MAX_RESULTS, DEFAULT_TIMEOUT_MS, DEFAULT_GRACE_MS, DEFAULT_STDERR_MAX_BYTES, DEFAULT_RAW_OUTPUT_MAX_BYTES, };

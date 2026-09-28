@@ -9,7 +9,7 @@
 |---|---|
 | `src/index.ts` | 唯一源码：Cordis 插件，导出 `{ apply, Config, inject, name }` |
 | `lib/index.js` + `lib/types/` | 构建产物（`tsc` 输出），**随源码一起提交**（路线 A，git 分发） |
-| `test/index.test.mjs` | `node --test` 测试（当前 47 项） |
+| `test/index.test.mjs` | `node --test` 测试（当前 53 项） |
 | `cordis.patch.yml` | `dsh.bundle.patch` 指向的 profile 层 patch |
 | `package.json` | `main`/`exports["."]` 指向 `lib/index.js`；`dsh.bundle` 声明 patch 文件 |
 
@@ -55,8 +55,11 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 - `size:>1gb` → `size:^>1gb`（不会被当作重定向）
 - `*.pdf | *.txt` → `*.pdf^ ^|^ *.txt`（保持一次 OR 搜索，不是管道）
 - `Windows11 25H2.iso` → `Windows11^ 25H2.iso`（保持多词查询）
+- `100%CD%` → `100^%CD^%`（不被 cmd 的 `%NAME%` 替换吃掉；实测 `cmd /c "echo ^%CD^%"` 打印字面 `%CD%`，不加 caret 则打印当前目录）
 
 查询**绝不用引号**：es 会把引号原样传给 Everything，其中 `"..."` 表示精确短语搜索，会静默返回 0 结果。
+
+**非查询参数走白名单，不走转义。** `sort_by` 与 `attributes` 同样会被拼进这条 `cmd /c` 字符串，早期版本原样透传，于是 `sort_by: "name & echo X"` 让 cmd 执行了两条命令、`attributes: "R & echo X"` 同理（实测：构造出的命令行里 `&` 裸露，而 `cmd /c "echo a & echo b"` 确实输出两行）。现在 `parseEverythingArgs` 在拼串之前就把两者收窄：`sort_by` 只接受 schema 里写明的那 7 个字段（大小写不敏感、统一小写），`attributes` 必须是 DIR 风格字母加 `-`/`+`。非法值抛错并说明合法取值（`sort_by` 列出全部 7 个，`attributes` 给示例），连 es 都不会 spawn。**新增任何进入命令行的参数都要按同一模式处理**——白名单比转义更好，因为错误信息能直接告诉调用方合法取值。
 
 `path` 参数**不折叠进查询**，而是作为 es 的 `-path` 选项传递（广域 `content:` 搜索则用 `-parent`）。早期版本用 `path:` 前缀折叠，两种失败方式均已实测：
 
@@ -77,7 +80,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 - `-size` 与 `-r` 组合时，es 会把 JSON 多包一层数组（`[[{...}]]`）；解析器解开一层。
 - `-attribs` 输出数字位掩码（如 16 = 目录，32 = 归档）；转换为 DIR 风格字母（`R H S D A V N T L C O I E`）。
-- FILETIME（自 1601 年起 100ns 间隔）转换为 `2026-01-02 03:04:05` 式可读格式。
+- FILETIME（自 1601 年起 100ns 间隔）转换为 `2026-01-02 03:04:05` 式可读格式。**不可用的时间戳直接丢字段**：0 是 Windows API 的「未设置」值，格式化出来是 1601-01-01（没人要这个日期）；非数值或超出 `Date` 范围的值会让 `toISOString()` 抛 `RangeError: Invalid time value`，那是整次调用失败，而不是少一个元数据字段。守卫写成 `typeof === 'number' && Number.isFinite && > 0`，两处都有测试。
 
 ### 5. content: 安全护栏
 
@@ -99,9 +102,10 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 ## 测试要点
 
 - mock es 输出必须贴近真实 es 的形态，否则 schema 违规测不出来——**mock 发不出的字段，测试永远看不见它违反 schema**。fixture 至少覆盖：目录（`extension: null`）、无扩展名文件（`extension: ""`）、普通文件（`extension: "js"`）。
+- **注入类缺陷只能靠断言命令串本身**：mock seam 不经过真实 cmd，`sort_by`/`attributes` 里裸露的 `&` 在 mock 下"测试全绿"。所以回归测试断言的是构造出来的命令行（合法值被白名单收窄成 `-sort date-modified-ascending`、`/aR-H`，非法值在 spawn 之前就抛错），以及"被拒绝的调用不得 spawn"。
 - 通用断言：遍历每条结果，**任何字段值不得为 null**。
 - 判断插件有没有被 DSH 加载，用会话记录的最新一轮 `request/header` 工具表，别问模型"你看到新提示词了吗"（模型侧策略会拒绝逐字复述，且观感可能滞后于下发内容）。
-- 当前 47 项全部通过。
+- 当前 53 项全部通过。
 
 ## 面向模型的文案（两处落点，互不同步）
 
@@ -125,6 +129,8 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 已测试版本：**DSH v0.1.7-rc.2**（2026-09）。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
 
+`schemastery` 是唯一进 `dependencies` 的包（代码真正 import 它），范围写 **`~3.18.4`**：宿主的每一个包都声明 `~3.18.4`，宿主实体也是 3.18.4，所以插件解析到的是**同一个 `.pnpm/@deepseek-ai+schemastery@3.18.4`**。此前写 `^3.18.2` 时 lock 把本包钉在 3.18.2，同一进程里存在两份 schemastery——它不报错（`Config` 只被 cordis 当鸭子类型调用），但类型图会因此分叉，`TS2883` 就是那份分叉的产物。**升级 DSH 时把这条范围一起复核**（宿主换到新的 schemastery 行时必须同步跟）。
+
 ## 与宿主版本的绑定点（0.1.7-rc.2）
 
 `devDependencies` 里那五个宿主包**钉死版本号而非范围**：它们决定 `tsc` 拿哪一版类型校验。**连接点挂载时运行时用的是宿主那一份**，所以不钉死就会出现"类型按旧版通过、运行按新版行为"的错位——本插件曾长期拿 0.1.5-rc.1 的类型编译。
@@ -134,7 +140,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 | `peerDependencies` | 四个宿主包 `^0.1.7-rc.2`，`cordis` 仍 `^4.0.2` | 预发布版本只被「同一 major.minor.patch 且带预发布」的范围放行，`^0.1.5-rc.1` 匹配不到 0.1.7-rc.2 |
 | `devDependencies` | 同一组版本号，精确 | 让 `tsc` 按新宿主校验；否则类型检查是假绿 |
 | 导入的宿主类型 | `SubprocessSpawnSpec`/`SubprocessHandle`/`SubprocessOutcome`、`PromptSection`、`ToolRunContext`/`ToolCallView`/`ToolResultView` | 本地结构接口**不会**因宿主漂移而报错（指南「类型定义原则」）；改用宿主类型后 `exec.agent.session.header.cwd` 这类访问点全部受检 |
-| `Config` 的标注 | `configSchema as unknown as ReturnType<typeof z.any>` | schemastery 3.18.4 让 `z.object({...})` 的推断类型在导出声明里不可命名（TS2883），而直接标注又撞 `Schema` 的变型（TS2322） |
+| `Config` 的标注 | `configSchema as unknown as ReturnType<typeof z.any>` | 三种写法实测：原样导出在**两份 schemastery 同版本**时能过、分叉时报 `TS2883`（"cannot be named without a reference to 'Schema'"）；直接标注两边都报 `TS2322`（`Schema` 的 `data` 参数逆变，与副本数量无关）；断言恒过但放弃检查。宿主换 schemastery 行会让两份实体重新分叉，断言让那时只多一个可移植声明、而不是构建直接红 |
 
 ### 交融点（用满新版能力，而不只是"能跑"）
 

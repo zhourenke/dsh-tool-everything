@@ -21,7 +21,13 @@ import { HarnessError } from '@deepseek-ai/dsh-llm'
 // is the same accessor the host's glob/grep tools read.
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import type { PromptSection } from '@deepseek-ai/dsh-system-prompt'
-import type { ToolCallView, ToolResultView, ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type {
+  ToolCallView,
+  ToolDefinition,
+  ToolResult,
+  ToolResultView,
+  ToolRunContext,
+} from '@deepseek-ai/dsh-tools'
 
 
 // ---------------------------------------------------------------------------
@@ -178,7 +184,8 @@ interface HostContext {
     /** Central placement of a registered section, or undefined for an unknown name. */
     getSectionOrder(name: string): number | undefined
   }
-  tools: { register(definition: { name: string }): unknown }
+  /** The host's own `ToolDefinition`, so a tool shape that drifts fails `tsc`. */
+  tools: { register(definition: ToolDefinition): unknown }
   subprocess: { spawn(spec: SubprocessSpawnSpec): SubprocessHandle }
 }
 
@@ -267,6 +274,54 @@ function extractInlinePath(query: string): string | undefined {
 // Argument parsing
 // ---------------------------------------------------------------------------
 
+/**
+ * Sort fields accepted by `-sort <field>-<direction>`, exactly as the tool
+ * schema documents them.
+ *
+ * This is a whitelist rather than a passthrough because the value is
+ * interpolated into a `cmd /c` command string: a `&`, `|` or `>` in a
+ * free-form value would be read by cmd as an operator instead of as part of
+ * the argument (measured: a sort value of `name & echo X` makes cmd run two
+ * commands). Any further field es accepts has to be added here deliberately.
+ */
+const SORT_FIELDS = [
+  'name',
+  'path',
+  'size',
+  'extension',
+  'date-created',
+  'date-modified',
+  'date-accessed',
+] as const
+
+/**
+ * Everything's `/a` attribute filter: DIR-style attribute letters, with `-` to
+ * exclude one and `+` to require it (e.g. `R`, `R-H`, `RHS`). Same whitelist
+ * reason as SORT_FIELDS — the value reaches cmd verbatim.
+ */
+const ATTRIBUTE_FILTER = /^[A-Za-z+-]{1,32}$/
+
+/** Validate `sort_by` against the fields es sorts by, lower-casing it. */
+function parseSortField(raw: unknown): string {
+  const value = String(raw).trim().toLowerCase()
+  if (!(SORT_FIELDS as readonly string[]).includes(value)) {
+    throw new Error(`sort_by must be one of: ${SORT_FIELDS.join(', ')}`)
+  }
+  return value
+}
+
+/** Validate `attributes` against Everything's `/a` filter syntax. */
+function parseAttributeFilter(raw: unknown): string {
+  const value = String(raw).trim()
+  if (!ATTRIBUTE_FILTER.test(value)) {
+    throw new Error(
+      'attributes must be DIR-style attribute letters, optionally with "-" or "+" ' +
+        `(for example "R", "R-H" or "RHS"); got "${value}"`,
+    )
+  }
+  return value
+}
+
 /** Validated input for the `es` command. */
 interface EverythingInput {
   query: string
@@ -305,6 +360,12 @@ function parseEverythingArgs(args: Record<string, unknown>): EverythingInput {
     throw new Error('path must be a non-empty string when given')
   }
 
+  // Both of these land in the command string, so they are narrowed to a known
+  // vocabulary before they ever get there (see SORT_FIELDS).
+  const sortBy = args.sort_by === undefined ? undefined : parseSortField(args.sort_by)
+  const attributes =
+    args.attributes === undefined ? undefined : parseAttributeFilter(args.attributes)
+
   // Collect requested columns
   const columns: string[] = []
   if (args.include_path) columns.push('path')
@@ -324,10 +385,10 @@ function parseEverythingArgs(args: Record<string, unknown>): EverythingInput {
     matchPath: Boolean(args.match_path),
     fileOnly: Boolean(args.file_only),
     folderOnly: Boolean(args.folder_only),
-    sortBy: args.sort_by !== undefined ? String(args.sort_by) : undefined,
+    sortBy,
     sortDesc: Boolean(args.sort_desc),
     path: args.path !== undefined ? String(args.path) : undefined,
-    attributes: args.attributes !== undefined ? String(args.attributes) : undefined,
+    attributes,
     columns,
   }
 }
@@ -341,14 +402,16 @@ function parseEverythingArgs(args: Record<string, unknown>): EverythingInput {
  * string. Every shell-special character — including SPACE — is escaped with
  * caret (^), cmd's escape character, so the query is passed to es literally:
  * `size:>1gb` stays `size:>1gb` (not a redirection), `*.pdf | *.txt` stays
- * one OR search (not a pipe), and `Windows11 25H2.iso` stays one multi-word
- * query (cmd splits on spaces, but es merges its positional arguments back
- * into the search text). Quotes are NEVER used: es passes them through to
- * Everything, where `"..."` means a literal search and silently returns zero
- * results.
+ * one OR search (not a pipe), `Windows11 25H2.iso` stays one multi-word query
+ * (cmd splits on spaces, but es merges its positional arguments back into the
+ * search text), and `100%CD%` stays `100%CD%` instead of being expanded by
+ * cmd's `%NAME%` substitution — measured: `cmd /c "echo ^%CD^%"` prints the
+ * literal `%CD%`, while the same line without carets prints the working
+ * directory. Quotes are NEVER used: es passes them through to Everything,
+ * where `"..."` means a literal search and silently returns zero results.
  */
 function escapeForCmd(arg: string): string {
-  return arg.replace(/[ &|<>^()"]/g, (ch) => `^${ch}`)
+  return arg.replace(/[ &|<>^()"%]/g, (ch) => `^${ch}`)
 }
 
 /**
@@ -604,25 +667,38 @@ interface EsResultEntry {
  * Format a file size in bytes to a human-readable string.
  */
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B'
+  // Zero, negative and non-finite values have no place on the log scale; they
+  // are printed as whole bytes so the unit index can never run off the list (a
+  // value of 1 PB or more would otherwise index past TB and print "undefined"
+  // as its unit).
+  if (!Number.isFinite(bytes) || bytes <= 0) return `${bytes} B`
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  const size = bytes / Math.pow(1024, i)
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
+  const size = bytes / 1024 ** i
   return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
 /**
  * Convert a Windows FILETIME (100-ns intervals since 1601-01-01 UTC) to an
- * ISO-8601 date string.
+ * ISO-8601 date string, or undefined when the value is not a usable timestamp.
+ *
+ * Rejecting instead of formatting matters in both directions: zero is the
+ * Windows API's "unset" value and would render as 1601-01-01, a date no caller
+ * asked for, and a value outside `Date`'s range makes `toISOString()` throw a
+ * RangeError — which fails the whole tool call rather than dropping one
+ * metadata field.
  */
-function formatFiletime(filetime: number): string {
+function formatFiletime(filetime: unknown): string | undefined {
+  if (typeof filetime !== 'number' || !Number.isFinite(filetime) || filetime <= 0) return undefined
   // FILETIME epoch: January 1, 1601 (UTC)
   // Unix epoch: January 1, 1970 (UTC)
   // Difference: 11644473600 seconds
   const UNIX_EPOCH_DIFF = 11644473600
   const unixSeconds = Math.floor(filetime / 10_000_000) - UNIX_EPOCH_DIFF
   const date = new Date(unixSeconds * 1000)
-  return date.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '')
+  return Number.isNaN(date.getTime())
+    ? undefined
+    : date.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '')
 }
 
 /**
@@ -691,7 +767,7 @@ async function runEs(
   rawOutputMaxBytes: number,
   graceMs: number,
   stderrMaxBytes: number,
-): Promise<{ stdout: string; noMatches: boolean; workdir: string }> {
+): Promise<{ stdout: string; noMatches: boolean }> {
   if (exec.signal.aborted) {
     throw new EverythingError(
       `${toolName} was aborted before completion (tool timeout or caller cancellation)`,
@@ -794,9 +870,10 @@ async function runEs(
 
   // Acquire the COMPLETE raw stdout, never a silently-partial stream. A truncated
   // capture means the seam could not retain complete stdout within the requested
-  // budget; the byte check below additionally guards a seam that honours the
-  // budget but does not flag the loss. Same two-step shape as the host's own
-  // `completeStdout` in dsh-tool-fs-search, so both discovery tools fail alike.
+  // budget; the byte check below additionally guards a seam that never enforces
+  // that budget at all — one that hands back everything has no loss to flag.
+  // Same two-step shape as the host's own `completeStdout` in
+  // dsh-tool-fs-search, so both discovery tools fail alike.
   if (stdout.lossy) {
     throw new EverythingError(
       `${toolName} produced more raw output than the subprocess seam retained within the ${rawOutputMaxBytes}-byte cap; narrow the query and retry`,
@@ -816,7 +893,7 @@ async function runEs(
   // An empty JSON array means no matches
   const noMatches = text === '[]' || text.trim() === ''
 
-  return { stdout: text, noMatches, workdir }
+  return { stdout: text, noMatches }
 }
 
 // ---------------------------------------------------------------------------
@@ -882,7 +959,7 @@ function everythingSearchPresentCall(args: Record<string, unknown>): ToolCallVie
  */
 function everythingSearchPresentResult(
   _args: Record<string, unknown>,
-  result: any,
+  result: ToolResult,
 ): ToolResultView | undefined {
   if (result.isError) return undefined
   const meta = result.meta as { total: number; truncated: boolean; query: string; results: string[] } | undefined
@@ -1083,28 +1160,24 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
           },
         },
       },
+      // Both projections read `value` through the type the schema above infers,
+      // so a renamed or retyped output field fails `tsc` here instead of
+      // silently printing nothing (a local annotation would keep compiling).
       render: (_args, value) => {
-        const v = value as {
-          total: number
-          truncated: boolean
-          query: string
-          results: Array<Record<string, unknown>>
-          warning?: string
-        }
-        if (v.total === 0 && !v.warning) {
+        if (value.total === 0 && !value.warning) {
           return [{ type: 'text' as const, text: 'No files found' }]
         }
         let header = ''
-        if (v.total > 0) {
-          header = `Found ${v.total} result${v.total === 1 ? '' : 's'} for "${v.query}"${v.truncated ? ` (showing first ${v.results.length})` : ''}`
+        if (value.total > 0) {
+          header = `Found ${value.total} result${value.total === 1 ? '' : 's'} for "${value.query}"${value.truncated ? ` (showing first ${value.results.length})` : ''}`
         }
-        if (v.warning) {
-          header = `${header}\n\n⚠️ ${v.warning}`
+        if (value.warning) {
+          header = `${header}\n\n⚠️ ${value.warning}`
         }
-        if (v.total === 0) {
+        if (value.total === 0) {
           return [{ type: 'text' as const, text: header || 'No files found' }]
         }
-        const lines = v.results.map((r, i) => {
+        const lines = value.results.map((r, i) => {
           const filepath = String(r.path ?? '(unknown)')
           const meta: string[] = []
           if (r.size !== undefined && r.size !== null) meta.push(formatSize(Number(r.size)))
@@ -1119,33 +1192,24 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
         return [{ type: 'text' as const, text: `${header}\n\n${lines.join('\n')}` }]
       },
       presentationMeta: (_args, value) => {
-        const v = value as {
-          total: number
-          truncated: boolean
-          query: string
-          results: Array<Record<string, unknown>>
-        }
         // This projection is persisted with the session log, so bound it the way
         // the host bounds its own glob metadata. `truncated` has to reflect the
         // dropped paths, or a UI would present a capped list as the complete
         // result set.
         const capped = capPathsForMeta(
-          v.results.map((r) => String(r.path ?? '(unknown)')),
+          value.results.map((r) => String(r.path ?? '(unknown)')),
           PRESENTATION_META_MAX_BYTES,
         )
         return {
-          total: v.total,
-          truncated: v.truncated || capped.truncated,
-          query: v.query,
+          total: value.total,
+          truncated: value.truncated || capped.truncated,
+          query: value.query,
           results: capped.paths,
         }
       },
     },
     async execute(args, exec) {
       const input = parseEverythingArgs(args)
-      input._contentSearchRestricted = false
-      input._contentSearchRestrictedPath = undefined
-      input._contentSearchRejected = false
       const invocation = buildEsCommand(input)
 
       // Reject content: searches with no path — attempting them would
@@ -1183,18 +1247,17 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
 
       const entries = parseEsOutput(run.stdout)
       const results = entries.map((entry) => {
+        // A timestamp es cannot supply is dropped rather than rendered as a
+        // bogus 1601 date, see formatFiletime.
+        const dateModified = formatFiletime(entry.date_modified)
+        const dateCreated = formatFiletime(entry.date_created)
+        const dateAccessed = formatFiletime(entry.date_accessed)
         return {
           path: entry.filename ?? entry.path ?? '(unknown)',
           ...(entry.size !== null && entry.size !== undefined ? { size: entry.size } : {}),
-          ...(entry.date_modified !== null && entry.date_modified !== undefined
-            ? { date_modified: formatFiletime(entry.date_modified) }
-            : {}),
-          ...(entry.date_created !== null && entry.date_created !== undefined
-            ? { date_created: formatFiletime(entry.date_created) }
-            : {}),
-          ...(entry.date_accessed !== null && entry.date_accessed !== undefined
-            ? { date_accessed: formatFiletime(entry.date_accessed) }
-            : {}),
+          ...(dateModified !== undefined ? { date_modified: dateModified } : {}),
+          ...(dateCreated !== undefined ? { date_created: dateCreated } : {}),
+          ...(dateAccessed !== undefined ? { date_accessed: dateAccessed } : {}),
           // es reports "extension":null for a directory, "" for an extensionless
           // file, and the extension otherwise (measured against the real es with
           // `-json -ext`). The declared output schema types this field as a
@@ -1265,13 +1328,26 @@ const configSchema = z.object({
 /**
  * Plugin configuration schema.
  *
- * The `as unknown as ReturnType<typeof z.any>` widening is required, not
- * cosmetic: schemastery 3.18.4 (the copy DSH 0.1.7-rc.2 resolves for us) makes
- * the inferred type of `z.object({...})` unnameable from an exported declaration
- * (`TS2883: The inferred type of 'Config' cannot be named without a reference to
- * 'Schema'`), while annotating it directly fails on `Schema`'s variance
- * (`TS2322`). Erasing to the default export's return type keeps the declaration
- * portable, and matches the other plugins in this workspace.
+ * The `as unknown as ReturnType<typeof z.any>` widening keeps this exported
+ * declaration portable, and the three forms were measured rather than guessed:
+ *
+ * - Exporting the schema as-is (`const Config = configSchema`) is the form to
+ *   try first. It compiles while this package and the host resolve the SAME
+ *   schemastery copy (measured after pinning `~3.18.4`, the line every DSH
+ *   0.1.7-rc.2 package declares), and it goes red the moment the two copies
+ *   split (`TS2883: The inferred type of 'Config' cannot be named without a
+ *   reference to 'Schema'`) — which is a signal to re-decide, not a bug.
+ * - Annotating it directly fails either way: `Schema`'s `data` parameter is
+ *   contravariant, so `Schema<ObjectS<…>>` is not assignable to
+ *   `Schema<unknown, unknown, 'plain'>` (`TS2322`).
+ * - Widening through the double assertion always compiles, at the cost of not
+ *   checking the export at all.
+ *
+ * The assertion is kept because the split is something the host can cause on
+ * its own schedule (a DSH upgrade to a new schemastery line), and the emitted
+ * declaration then stays portable instead of turning a dependency bump into a
+ * build break. PLUGIN_RELEASE_GUIDE.md 「DSH 升级后的复核」 greps for exactly
+ * this expression, so do not delete it as a redundant cast.
  * @see PLUGIN_RELEASE_GUIDE.md 「类型定义原则」
  */
 const Config = configSchema as unknown as ReturnType<typeof z.any>
@@ -1279,17 +1355,10 @@ const Config = configSchema as unknown as ReturnType<typeof z.any>
 /**
  * Register the `everything_search` tool.
  */
-async function apply(ctx: HostContext, config: EverythingConfig): Promise<void> {
+function apply(ctx: HostContext, config: EverythingConfig): void {
   applyEverythingTool(ctx, config)
 }
 
+// Only the cordis contract is exported: the host loads `apply`, `Config`,
+// `inject` and `name`, and the constants below stay private to the bundle.
 export { apply, Config, inject, name }
-export {
-  EverythingError,
-  DEFAULT_MAX_RESULTS,
-  ABSOLUTE_MAX_RESULTS,
-  DEFAULT_TIMEOUT_MS,
-  DEFAULT_GRACE_MS,
-  DEFAULT_STDERR_MAX_BYTES,
-  DEFAULT_RAW_OUTPUT_MAX_BYTES,
-}

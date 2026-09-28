@@ -328,6 +328,54 @@ test('spaces are caret-escaped rather than quoted', async () => {
   assert.doesNotMatch(line, /"/, 'quotes would turn the query into a literal search')
 })
 
+test('percent signs are caret-escaped so cmd cannot expand them', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '100%CD%' }, execContext())
+  const line = commandLine(harness)
+
+  // Measured: `cmd /c "echo ^%CD^%"` prints the literal `%CD%`, while the same
+  // line without carets prints the working directory — so an unescaped
+  // `%NAME%` in a query silently becomes something else.
+  assert.match(line, /100\^%CD\^%/)
+  assert.doesNotMatch(line, /100%CD%/, 'an unescaped %NAME% would be expanded by cmd')
+})
+
+test('sort_by is narrowed to the fields es sorts by before it reaches cmd', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '*.pdf', sort_by: 'Date-Modified' }, execContext())
+  assert.match(commandLine(harness), /-sort date-modified-ascending/)
+
+  // Measured through this tool: the free-form value used to reach the command
+  // string verbatim, so `name & echo X` made cmd run two commands.
+  const hostile = createHarness()
+  const hostileTool = await loadTool(hostile)
+  await assert.rejects(
+    () => hostileTool.execute({ query: '*.pdf', sort_by: 'name & echo INJECTED' }, execContext()),
+    /sort_by must be one of: name, path, size, extension, date-created, date-modified, date-accessed/,
+  )
+  assert.equal(hostile.spawnCalls.length, 0, 'a rejected sort must never reach the shell')
+})
+
+test('attributes is narrowed to DIR-style letters before it reaches cmd', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '*.pdf', attributes: 'R-H' }, execContext())
+  assert.match(commandLine(harness), /\/aR-H/)
+
+  const hostile = createHarness()
+  const hostileTool = await loadTool(hostile)
+  await assert.rejects(
+    () => hostileTool.execute({ query: '*.pdf', attributes: 'R & echo INJECTED' }, execContext()),
+    /attributes must be DIR-style attribute letters/,
+  )
+  assert.equal(hostile.spawnCalls.length, 0, 'a rejected filter must never reach the shell')
+})
+
 test('-r is emitted last, immediately before the query', async () => {
   const harness = createHarness()
   const tool = await loadTool(harness)
@@ -475,6 +523,33 @@ test('FILETIME values are rendered as ISO-ish local timestamps', async () => {
 
   const result = await tool.execute({ query: '*.pdf' }, execContext())
   assert.equal(result.results[0].date_modified, '2026-01-02 03:04:05')
+})
+
+test('a timestamp es cannot supply is dropped instead of rendered as 1601', async () => {
+  const harness = createHarness({
+    respond: succeedWith(
+      JSON.stringify([{ filename: 'C:\\a.pdf', date_modified: 0, date_created: null }]),
+    ),
+  })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: '*.pdf' }, execContext())
+  assert.equal('date_modified' in result.results[0], false)
+  assert.equal('date_created' in result.results[0], false)
+  assert.equal(result.results[0].path, 'C:\\a.pdf')
+})
+
+test('a non-numeric timestamp cannot fail the whole call', async () => {
+  // Without the type guard this reached `new Date(NaN).toISOString()` and threw
+  // RangeError "Invalid time value", failing the entire call over one field.
+  const harness = createHarness({
+    respond: succeedWith(JSON.stringify([{ filename: 'C:\\a.pdf', date_modified: 'n/a' }])),
+  })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: '*.pdf' }, execContext())
+  assert.equal('date_modified' in result.results[0], false)
+  assert.equal(result.results[0].path, 'C:\\a.pdf')
 })
 
 test('a directory match does not leak a null extension into the output', async () => {
@@ -700,6 +775,20 @@ test('render reports the zero-match case plainly', async () => {
 
   const blocks = tool.output.render({}, { total: 0, truncated: false, query: '*.pdf', results: [] })
   assert.equal(blocks[0].text, 'No files found')
+})
+
+test('a size past the TB unit is capped instead of printing an undefined unit', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const blocks = tool.output.render({}, {
+    total: 1,
+    truncated: false,
+    query: '*.bin',
+    results: [{ path: 'C:\\huge.bin', size: 1024 ** 5 }],
+  })
+  assert.match(blocks[0].text, /1024\.0 TB/)
+  assert.doesNotMatch(blocks[0].text, /undefined/)
 })
 
 test('a restricted content search carries its warning into the rendered header', async () => {
