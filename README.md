@@ -147,7 +147,7 @@ dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 
 ## 兼容性
 
-在 **DSH v0.1.7-rc.2**（2026-09）下测试通过；peer 依赖只声明该宿主版本。
+本插件版本 **0.1.7-rc2.1** 是面向 **DSH v0.1.7-rc.2** 的第一个版本（`0.1.7-rc2.<n>` 即面向该宿主构建的第 n 个插件版本），在 v0.1.7-rc.2（2026-09）下测试通过；peer 依赖只声明该宿主版本。
 
 ## 许可证
 
