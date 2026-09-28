@@ -147,7 +147,7 @@ Files and folders are matched by default; when the listing fills `max_results`, 
 
 ## Compatibility
 
-Tested with **DSH v0.1.5-rc.1** (September 2026).
+Tested with **DSH v0.1.7-rc.2** (September 2026); its peer dependencies declare that host version only.
 
 ## License
 

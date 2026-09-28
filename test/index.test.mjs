@@ -755,3 +755,64 @@ test('presentResult yields a paths search view, and falls back on error', async 
   assert.equal(tool.presentResult({ query: '*.pdf' }, { isError: true, meta }), undefined)
   assert.equal(tool.presentResult({ query: '*.pdf' }, { isError: false }), undefined)
 })
+
+// ---------------------------------------------------------------------------
+// 0.1.7-rc.2 integration: concurrency classification and bounded projections
+// ---------------------------------------------------------------------------
+
+test('the tool declares itself safe to run in a parallel group', async () => {
+  // Left absent, the host's registry classifies every tool as `exclusive`
+  // (dsh-tools: `if (!tool?.isConcurrencySafe) return { kind: 'exclusive' }`),
+  // which would serialize concurrent searches. A pure read of the Everything
+  // index shares no mutable state, so a parallel group is safe.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  assert.equal(typeof tool.isConcurrencySafe, 'function')
+  assert.equal(tool.isConcurrencySafe({ query: '*.pdf' }), true)
+})
+
+test('presentationMeta caps the replayed path list and marks it truncated', async () => {
+  // The projection is persisted with the session log, so an exhaustive search
+  // (max_results: 100000) must not replay every path into it. This mirrors the
+  // host's own capMetaBytes for glob/grep.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const many = Array.from({ length: 500 }, (_, i) => ({
+    path: `C:\\dir\\file-${String(i).padStart(4, '0')}-${'z'.repeat(80)}.pdf`,
+  }))
+  const meta = tool.output.presentationMeta({}, {
+    total: 500,
+    truncated: false,
+    query: '*.pdf',
+    results: many,
+  })
+
+  assert.ok(meta.results.length > 0, 'a usable prefix must survive')
+  assert.ok(meta.results.length < many.length, 'every path must not be kept')
+  assert.equal(meta.truncated, true, 'a capped list must never look complete')
+  assert.equal(meta.total, 500, 'the true total survives the cap')
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(meta.results), 'utf8') <= 16 * 1024,
+    'the retained list must fit the byte budget',
+  )
+  assert.deepEqual(
+    meta.results,
+    many.slice(0, meta.results.length).map((r) => r.path),
+    'the retained paths keep result order',
+  )
+})
+
+test('a capture over the byte cap is rejected even when it is not flagged lossy', async () => {
+  // The seam is handed a stdout budget, but a provider that returns more without
+  // flagging the loss must not reach the parser oversized. Same two-step check
+  // as the host's own completeStdout.
+  const harness = createHarness({ respond: succeedWith(`[{"filename":"${'x'.repeat(200)}"}]`) })
+  const tool = await loadTool(harness, { rawOutputMaxBytes: 64 })
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.pdf' }, execContext()),
+    (error) => error.code === 'ES_RAW_OUTPUT_OVERFLOW',
+  )
+})

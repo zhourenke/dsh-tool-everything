@@ -13,6 +13,16 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 
+// The host's own declarations are the contract for everything below. Importing
+// them instead of mirroring the shapes locally is what lets `tsc` catch host
+// drift; a local structural copy stays green while the host changes underneath
+// (PLUGIN_RELEASE_GUIDE.md 「类型定义原则」). `ToolRunContext` carries the agent
+// augmentation (`session.header.cwd`) through dsh-tools' own type graph, which
+// is the same accessor the host's glob/grep tools read.
+import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+import type { PromptSection } from '@deepseek-ai/dsh-system-prompt'
+import type { ToolCallView, ToolResultView, ToolRunContext } from '@deepseek-ai/dsh-tools'
+
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -135,64 +145,23 @@ class EverythingError extends HarnessError {
 // modelled as optional. Optional capabilities would use `ctx.get(name)` and be
 // declared `| undefined` here.
 
-/** One collected output stream returned by the subprocess seam. */
-interface CollectedStream {
-  text?: string
-  lossy?: boolean
-}
-
-/** Terminal facts of one finished process. */
-interface ProcessOutcome {
-  signal: string | null
-  exitCode: number | null
-}
+// The subprocess seam's request/handle/outcome vocabulary is imported from
+// `@deepseek-ai/dsh-subprocess` rather than mirrored locally, so a host-side
+// field change fails `tsc` instead of failing at runtime. The host's
+// `SubprocessSpawnSpec` is exactly the request this plugin sends: argv, cwd,
+// per-stream stdio retention budgets, a terminate grace period, the
+// caller-owned abort signal, and optional extra environment entries merged onto
+// the seam's scrubbed parent base — the last of which carries a quoted
+// `-path` / `-parent` value past cmd's tokenizer without a quote character ever
+// appearing in the command string.
 
 /**
- * Spawn request accepted by `ctx.subprocess.spawn()`. Only the fields this
- * plugin sets are declared; the seam accepts more.
+ * Execution context handed to a tool's `execute`. The host's `ToolRunContext` is
+ * the contract; the session cwd it carries at `agent.session.header.cwd` is the
+ * same value the subprocess seam defaults to, and the same accessor the host's
+ * own glob/grep tools read.
  */
-interface SubprocessSpawnSpec {
-  argv: string[]
-  cwd: string
-  stdio: {
-    stdin: 'ignore'
-    stdout: { maxBytes: number }
-    stderr: { maxBytes: number }
-  }
-  graceMs: number
-  signal: AbortSignal
-  /**
-   * Extra environment entries for the child, merged onto the implementation's
-   * scrubbed parent base. Used to carry a quoted `-path` / `-parent` value past
-   * cmd's tokenizer without putting a quote character in the command string.
-   */
-  env?: Record<string, string>
-}
-
-/** Live handle for one spawned process. */
-interface SubprocessHandle {
-  done: Promise<ProcessOutcome>
-  collected: {
-    stdout?: { readFrom(offset: number): CollectedStream }
-    stderr?: { readFrom(offset: number): CollectedStream }
-  }
-}
-
-/** One system-prompt section request. */
-interface PromptSection {
-  name: string
-  order: number
-  text: string
-}
-
-/**
- * Execution context handed to a tool's `execute`. The session cwd is read from
- * `agent.session.header.cwd`, matching the subprocess seam's own default.
- */
-interface ToolExecContext {
-  signal: AbortSignal
-  agent?: { session?: { header?: { cwd?: string } } }
-}
+type ToolExecContext = ToolRunContext
 
 /** Plugin configuration after schemastery defaulting (fields stay optional so the coalescing below is honest). */
 interface EverythingConfig {
@@ -772,7 +741,7 @@ async function runEs(
     )
   }
 
-  let outcome: ProcessOutcome
+  let outcome: SubprocessOutcome
   try {
     outcome = await handle.done
   } catch (error) {
@@ -823,7 +792,11 @@ async function runEs(
     )
   }
 
-  // Check stdout size
+  // Acquire the COMPLETE raw stdout, never a silently-partial stream. A truncated
+  // capture means the seam could not retain complete stdout within the requested
+  // budget; the byte check below additionally guards a seam that honours the
+  // budget but does not flag the loss. Same two-step shape as the host's own
+  // `completeStdout` in dsh-tool-fs-search, so both discovery tools fail alike.
   if (stdout.lossy) {
     throw new EverythingError(
       `${toolName} produced more raw output than the subprocess seam retained within the ${rawOutputMaxBytes}-byte cap; narrow the query and retry`,
@@ -831,27 +804,66 @@ async function runEs(
     )
   }
 
-  // An empty JSON array means no matches
   const text = stdout.text ?? ''
+  const inlineBytes = Buffer.byteLength(text, 'utf8')
+  if (inlineBytes > rawOutputMaxBytes) {
+    throw new EverythingError(
+      `${toolName} produced ${inlineBytes} bytes of raw output, over the ${rawOutputMaxBytes}-byte cap; narrow the query and retry`,
+      'ES_RAW_OUTPUT_OVERFLOW',
+    )
+  }
+
+  // An empty JSON array means no matches
   const noMatches = text === '[]' || text.trim() === ''
 
   return { stdout: text, noMatches, workdir }
 }
 
 // ---------------------------------------------------------------------------
-// Tool presentation (modern presentCall/presentResult pattern)
+// Tool presentation (host presentCall/presentResult views)
 // ---------------------------------------------------------------------------
 
 /**
- * Tool-call card showing what the model searched for.
- * Returns a generic search card.
+ * Byte budget for the replayed presentation metadata. That projection is
+ * persisted with the session log, so an exhaustive search
+ * (`max_results: 100000`) must not write every discovered path into it. The host
+ * bounds its own glob/grep metadata the same way (`capMetaBytes` in
+ * dsh-tool-fs-search) and marks the result truncated when it drops anything, so
+ * a UI never presents a capped list as complete.
  */
-function everythingSearchPresentCall(args: Record<string, unknown>): {
-  card: 'generic'
-  title: string
-  kind: 'search'
-  rawInput: string
-} {
+const PRESENTATION_META_MAX_BYTES = 16 * 1024
+
+/**
+ * Bound a path list to a UTF-8 byte budget.
+ *
+ * Each path is measured *as JSON serializes it*, not as the raw string: a
+ * Windows path is full of backslashes and every one of them becomes `\\` in the
+ * log, so a naive `byteLength(path)` undercounts by roughly the path length —
+ * enough to blow the budget it is supposed to enforce. The trailing `+ 1` is
+ * the separating comma; charging one for the last element too keeps the
+ * estimate one byte conservative rather than one short.
+ * @param paths - the paths, in result order.
+ * @param maxBytes - the serialized-meta byte budget.
+ * @returns the retained prefix, plus whether anything was dropped.
+ */
+function capPathsForMeta(paths: string[], maxBytes: number): { paths: string[]; truncated: boolean } {
+  const kept: string[] = []
+  let bytes = 2 // the enclosing brackets
+  for (const path of paths) {
+    const cost = Buffer.byteLength(JSON.stringify(path), 'utf8') + 1
+    if (bytes + cost > maxBytes) break
+    bytes += cost
+    kept.push(path)
+  }
+  return { paths: kept, truncated: kept.length < paths.length }
+}
+
+/**
+ * Tool-call card showing what the model searched for. A pending search has no
+ * paths yet, so it stays the host's generic call view carrying `kind: 'search'`
+ * (the host documents exactly this for its own search tools).
+ */
+function everythingSearchPresentCall(args: Record<string, unknown>): ToolCallView | undefined {
   const query = String(args.query ?? '')
   const where = args.path !== undefined ? ` in ${String(args.path)}` : ''
   return {
@@ -863,20 +875,15 @@ function everythingSearchPresentCall(args: Record<string, unknown>): {
 }
 
 /**
- * Completed-result card showing the discovered paths in a structured search card.
- * Falls back to generic when the result is an error or has no meta.
+ * Completed-result card: the host's `SearchPathsResultView` — the same
+ * `card: 'search'` / `shape: 'paths'` view its own glob tool returns, so a
+ * capable UI renders this as a native search card. Falls back to the generic
+ * card for an error or a missing metadata projection.
  */
 function everythingSearchPresentResult(
   _args: Record<string, unknown>,
   result: any,
-): undefined | {
-  card: 'search'
-  shape: 'paths'
-  title: string
-  paths: string[]
-  truncated: boolean
-  total: number
-} {
+): ToolResultView | undefined {
   if (result.isError) return undefined
   const meta = result.meta as { total: number; truncated: boolean; query: string; results: string[] } | undefined
   if (meta === undefined) return undefined
@@ -1029,6 +1036,12 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
       },
     },
     timeoutMs,
+    // A pure read of the Everything index, with no shared mutable state, so the
+    // host may run several of these calls in one parallel group. Left absent the
+    // tool registry classifies every tool as `exclusive` (dsh-tools:
+    // `if (!tool?.isConcurrencySafe) return { kind: 'exclusive' }`), which would
+    // serialize concurrent searches for no reason.
+    isConcurrencySafe: () => true,
     presentCall: everythingSearchPresentCall,
     presentResult: everythingSearchPresentResult,
     output: {
@@ -1112,11 +1125,19 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
           query: string
           results: Array<Record<string, unknown>>
         }
+        // This projection is persisted with the session log, so bound it the way
+        // the host bounds its own glob metadata. `truncated` has to reflect the
+        // dropped paths, or a UI would present a capped list as the complete
+        // result set.
+        const capped = capPathsForMeta(
+          v.results.map((r) => String(r.path ?? '(unknown)')),
+          PRESENTATION_META_MAX_BYTES,
+        )
         return {
           total: v.total,
-          truncated: v.truncated,
+          truncated: v.truncated || capped.truncated,
           query: v.query,
-          results: v.results.map((r) => String(r.path ?? '(unknown)')),
+          results: capped.paths,
         }
       },
     },
@@ -1233,13 +1254,27 @@ const name = 'tool-everything'
 /** Services required by the tool. */
 const inject = ['tools', 'subprocess', 'systemPrompt']
 
-/** Plugin configuration schema. */
-const Config = z.object({
+/** Plugin configuration fields and their defaults. */
+const configSchema = z.object({
   timeoutMs: z.number().default(DEFAULT_TIMEOUT_MS),
   graceMs: z.number().default(DEFAULT_GRACE_MS),
   stderrMaxBytes: z.number().default(DEFAULT_STDERR_MAX_BYTES),
   rawOutputMaxBytes: z.number().default(DEFAULT_RAW_OUTPUT_MAX_BYTES),
 })
+
+/**
+ * Plugin configuration schema.
+ *
+ * The `as unknown as ReturnType<typeof z.any>` widening is required, not
+ * cosmetic: schemastery 3.18.4 (the copy DSH 0.1.7-rc.2 resolves for us) makes
+ * the inferred type of `z.object({...})` unnameable from an exported declaration
+ * (`TS2883: The inferred type of 'Config' cannot be named without a reference to
+ * 'Schema'`), while annotating it directly fails on `Schema`'s variance
+ * (`TS2322`). Erasing to the default export's return type keeps the declaration
+ * portable, and matches the other plugins in this workspace.
+ * @see PLUGIN_RELEASE_GUIDE.md 「类型定义原则」
+ */
+const Config = configSchema as unknown as ReturnType<typeof z.any>
 
 /**
  * Register the `everything_search` tool.

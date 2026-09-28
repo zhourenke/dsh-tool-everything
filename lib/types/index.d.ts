@@ -10,6 +10,8 @@
  */
 import z from '@deepseek-ai/schemastery';
 import { HarnessError } from '@deepseek-ai/dsh-llm';
+import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
+import type { PromptSection } from '@deepseek-ai/dsh-system-prompt';
 /** Default max results to return. */
 declare const DEFAULT_MAX_RESULTS = 50;
 /** Maximum allowed max_results (safety cap). */
@@ -28,59 +30,6 @@ type EverythingErrorCode = 'ES_NOT_FOUND' | 'ES_FAILED' | 'ES_RAW_OUTPUT_OVERFLO
 declare class EverythingError extends HarnessError {
     code: EverythingErrorCode;
     constructor(message: string, code: EverythingErrorCode, options?: ErrorOptions);
-}
-/** One collected output stream returned by the subprocess seam. */
-interface CollectedStream {
-    text?: string;
-    lossy?: boolean;
-}
-/** Terminal facts of one finished process. */
-interface ProcessOutcome {
-    signal: string | null;
-    exitCode: number | null;
-}
-/**
- * Spawn request accepted by `ctx.subprocess.spawn()`. Only the fields this
- * plugin sets are declared; the seam accepts more.
- */
-interface SubprocessSpawnSpec {
-    argv: string[];
-    cwd: string;
-    stdio: {
-        stdin: 'ignore';
-        stdout: {
-            maxBytes: number;
-        };
-        stderr: {
-            maxBytes: number;
-        };
-    };
-    graceMs: number;
-    signal: AbortSignal;
-    /**
-     * Extra environment entries for the child, merged onto the implementation's
-     * scrubbed parent base. Used to carry a quoted `-path` / `-parent` value past
-     * cmd's tokenizer without putting a quote character in the command string.
-     */
-    env?: Record<string, string>;
-}
-/** Live handle for one spawned process. */
-interface SubprocessHandle {
-    done: Promise<ProcessOutcome>;
-    collected: {
-        stdout?: {
-            readFrom(offset: number): CollectedStream;
-        };
-        stderr?: {
-            readFrom(offset: number): CollectedStream;
-        };
-    };
-}
-/** One system-prompt section request. */
-interface PromptSection {
-    name: string;
-    order: number;
-    text: string;
 }
 /** Plugin configuration after schemastery defaulting (fields stay optional so the coalescing below is honest). */
 interface EverythingConfig {
@@ -109,18 +58,19 @@ interface HostContext {
 declare const name = "tool-everything";
 /** Services required by the tool. */
 declare const inject: string[];
-/** Plugin configuration schema. */
-declare const Config: z<Schemastery.ObjectS<{
-    timeoutMs: z<number, number>;
-    graceMs: z<number, number>;
-    stderrMaxBytes: z<number, number>;
-    rawOutputMaxBytes: z<number, number>;
-}>, Schemastery.ObjectT<{
-    timeoutMs: z<number, number>;
-    graceMs: z<number, number>;
-    stderrMaxBytes: z<number, number>;
-    rawOutputMaxBytes: z<number, number>;
-}>>;
+/**
+ * Plugin configuration schema.
+ *
+ * The `as unknown as ReturnType<typeof z.any>` widening is required, not
+ * cosmetic: schemastery 3.18.4 (the copy DSH 0.1.7-rc.2 resolves for us) makes
+ * the inferred type of `z.object({...})` unnameable from an exported declaration
+ * (`TS2883: The inferred type of 'Config' cannot be named without a reference to
+ * 'Schema'`), while annotating it directly fails on `Schema`'s variance
+ * (`TS2322`). Erasing to the default export's return type keeps the declaration
+ * portable, and matches the other plugins in this workspace.
+ * @see PLUGIN_RELEASE_GUIDE.md 「类型定义原则」
+ */
+declare const Config: ReturnType<typeof z.any>;
 /**
  * Register the `everything_search` tool.
  */

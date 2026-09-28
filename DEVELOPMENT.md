@@ -9,7 +9,7 @@
 |---|---|
 | `src/index.ts` | 唯一源码：Cordis 插件，导出 `{ apply, Config, inject, name }` |
 | `lib/index.js` + `lib/types/` | 构建产物（`tsc` 输出），**随源码一起提交**（路线 A，git 分发） |
-| `test/index.test.mjs` | `node --test` 测试（当前 43 项） |
+| `test/index.test.mjs` | `node --test` 测试（当前 47 项） |
 | `cordis.patch.yml` | `dsh.bundle.patch` 指向的 profile 层 patch |
 | `package.json` | `main`/`exports["."]` 指向 `lib/index.js`；`dsh.bundle` 声明 patch 文件 |
 
@@ -101,7 +101,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - mock es 输出必须贴近真实 es 的形态，否则 schema 违规测不出来——**mock 发不出的字段，测试永远看不见它违反 schema**。fixture 至少覆盖：目录（`extension: null`）、无扩展名文件（`extension: ""`）、普通文件（`extension: "js"`）。
 - 通用断言：遍历每条结果，**任何字段值不得为 null**。
 - 判断插件有没有被 DSH 加载，用会话记录的最新一轮 `request/header` 工具表，别问模型"你看到新提示词了吗"（模型侧策略会拒绝逐字复述，且观感可能滞后于下发内容）。
-- 当前 43 项全部通过。
+- 当前 47 项全部通过。
 
 ## 面向模型的文案（两处落点，互不同步）
 
@@ -123,7 +123,26 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 | `@deepseek-ai/dsh-subprocess` | 子进程接口 |
 | `@deepseek-ai/dsh-system-prompt` | 系统提示词段落注册 |
 
-已测试版本：**DSH v0.1.5-rc.1**（2026-09）。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
+已测试版本：**DSH v0.1.7-rc.2**（2026-09）。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
+
+## 与宿主版本的绑定点（0.1.7-rc.2）
+
+`devDependencies` 里那五个宿主包**钉死版本号而非范围**：它们决定 `tsc` 拿哪一版类型校验。**连接点挂载时运行时用的是宿主那一份**，所以不钉死就会出现"类型按旧版通过、运行按新版行为"的错位——本插件曾长期拿 0.1.5-rc.1 的类型编译。
+
+| 绑定点 | 内容 | 为何必须 |
+|---|---|---|
+| `peerDependencies` | 四个宿主包 `^0.1.7-rc.2`，`cordis` 仍 `^4.0.2` | 预发布版本只被「同一 major.minor.patch 且带预发布」的范围放行，`^0.1.5-rc.1` 匹配不到 0.1.7-rc.2 |
+| `devDependencies` | 同一组版本号，精确 | 让 `tsc` 按新宿主校验；否则类型检查是假绿 |
+| 导入的宿主类型 | `SubprocessSpawnSpec`/`SubprocessHandle`/`SubprocessOutcome`、`PromptSection`、`ToolRunContext`/`ToolCallView`/`ToolResultView` | 本地结构接口**不会**因宿主漂移而报错（指南「类型定义原则」）；改用宿主类型后 `exec.agent.session.header.cwd` 这类访问点全部受检 |
+| `Config` 的标注 | `configSchema as unknown as ReturnType<typeof z.any>` | schemastery 3.18.4 让 `z.object({...})` 的推断类型在导出声明里不可命名（TS2883），而直接标注又撞 `Schema` 的变型（TS2322） |
+
+### 交融点（用满新版能力，而不只是"能跑"）
+
+- **`isConcurrencySafe: () => true`**：宿主对缺席者一律判 `exclusive`（`if (!tool?.isConcurrencySafe) return { kind: 'exclusive' }`），会把并发搜索无谓串行化。Everything 索引查询是纯读、无共享可变状态，可安全进并行组。
+- **presenter 返回宿主视图类型**：`presentResult` 返回的就是宿主的 `SearchPathsResultView`（`card: 'search'` + `shape: 'paths'`），与官方 glob 同一张卡；`presentCall` 保持 `card: 'generic'` + `kind: 'search'`——宿主文档明确：搜索的待定态没有路径可显示。
+- **`presentationMeta` 封顶 16 KiB**：该投影**随会话日志持久化**，穷举搜索（`max_results: 100000`）不能把每条路径都写进去。按宿主 `capMetaBytes` 的口径逐条量**序列化后**的长度——Windows 路径的反斜杠在 JSON 里是 `\\`，用 `byteLength(path)` 估算会把预算低估约一倍（第一版就是这么错的，被新测试抓住）。
+- **stdout 双重校验**：`lossy` → `ES_RAW_OUTPUT_OVERFLOW`；未标记 lossy 但字节数超预算同样拒绝。与官方 `completeStdout` 同形，两个发现类工具的失败方式一致。
+- **spill 有意不接**：seam 提供 `SubprocessOutputRead.spillPath`（大输出落盘），但官方 `completeStdout` 在 lossy 时**直接失败**而不读 spill——不解析可能不完整的流。本插件跟随该决定。
 
 ## 经验沉淀
 
