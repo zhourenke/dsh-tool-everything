@@ -15,6 +15,7 @@ import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 /** Plugin configuration after schemastery defaulting (fields stay optional so the coalescing below is honest). */
 interface EverythingConfig {
     timeoutMs?: number;
+    countTimeoutMs?: number;
     graceMs?: number;
     stderrMaxBytes?: number;
     rawOutputMaxBytes?: number;

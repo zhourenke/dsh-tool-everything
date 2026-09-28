@@ -43,6 +43,21 @@ const ABSOLUTE_MAX_RESULTS = 100000
 /** Default cooperative tool-call timeout budget in milliseconds. */
 const DEFAULT_TIMEOUT_MS = 1200000
 
+/**
+ * Default budget for the follow-up count pass, in milliseconds.
+ *
+ * The count is a bonus, not the result: it runs only after a listing has filled
+ * `max_results`, and when it cannot be read the caller degrades to "more may
+ * exist" — which it already does for a count that returns junk. Giving it a
+ * short budget of its own is what keeps a wedged `es` from eating the whole
+ * tool-call budget: measured 2026-09-28, five concurrent whole-disk attribute
+ * queries wedged Everything, after which every call ran to the host's
+ * 1200000 ms limit and failed — discarding the listing it had already fetched.
+ * Five seconds is far beyond a healthy count (the count query omits columns and
+ * the sort, so it is cheaper than the listing that preceded it).
+ */
+const DEFAULT_COUNT_TIMEOUT_MS = 5000
+
 /** Default terminate grace period for the `es` process (ms). */
 const DEFAULT_GRACE_MS = 3000
 
@@ -172,6 +187,7 @@ type ToolExecContext = ToolRunContext
 /** Plugin configuration after schemastery defaulting (fields stay optional so the coalescing below is honest). */
 interface EverythingConfig {
   timeoutMs?: number
+  countTimeoutMs?: number
   graceMs?: number
   stderrMaxBytes?: number
   rawOutputMaxBytes?: number
@@ -647,6 +663,13 @@ function makeInvocation(esArgs: string[], env?: Record<string, string>): EsInvoc
  * Returns undefined when the count cannot be read, so a listing that already
  * succeeded is never failed by the follow-up query; the caller degrades to
  * reporting that more results may exist.
+ *
+ * The count runs on a deadline of its own (`countTimeoutMs`), combined with the
+ * caller's signal rather than replacing it: a caller cancellation still aborts
+ * the count exactly as before, while a count that merely hangs is abandoned on
+ * its own budget and degrades through the catch below. `AbortSignal.timeout`
+ * unref's its timer, so nothing keeps the process alive, and `any` forwards
+ * every abort reason to the derived signal.
  */
 async function countMatches(
   ctx: HostContext,
@@ -655,6 +678,7 @@ async function countMatches(
   rawOutputMaxBytes: number,
   graceMs: number,
   stderrMaxBytes: number,
+  countTimeoutMs: number,
 ): Promise<number | undefined> {
   try {
     const run = await runEs(
@@ -665,6 +689,7 @@ async function countMatches(
       rawOutputMaxBytes,
       graceMs,
       stderrMaxBytes,
+      AbortSignal.any([exec.signal, AbortSignal.timeout(countTimeoutMs)]),
     )
     if (run.noMatches) return 0
     const count = Number.parseInt(run.stdout.trim(), 10)
@@ -788,6 +813,10 @@ function parseEsOutput(stdout: string): EsResultEntry[] {
 
 /**
  * Run the `es` command with the given argv and return its complete stdout.
+ *
+ * `signal` is passed in rather than read off `exec`: the listing runs on the
+ * caller's signal, while the follow-up count runs on a derived one that also
+ * carries its own deadline (see countMatches).
  */
 async function runEs(
   ctx: HostContext,
@@ -797,8 +826,9 @@ async function runEs(
   rawOutputMaxBytes: number,
   graceMs: number,
   stderrMaxBytes: number,
+  signal: AbortSignal,
 ): Promise<{ stdout: string; noMatches: boolean }> {
-  if (exec.signal.aborted) {
+  if (signal.aborted) {
     throw new EverythingError(
       `${toolName} was aborted before completion (tool timeout or caller cancellation)`,
       'ES_ABORTED',
@@ -818,11 +848,11 @@ async function runEs(
         stderr: { maxBytes: stderrMaxBytes },
       },
       graceMs,
-      signal: exec.signal,
+      signal,
       ...(invocation.env === undefined ? {} : { env: invocation.env }),
     })
   } catch (error) {
-    if (exec.signal.aborted) {
+    if (signal.aborted) {
       throw new EverythingError(
         `${toolName} was aborted before completion (tool timeout or caller cancellation)`,
         'ES_ABORTED',
@@ -868,7 +898,7 @@ async function runEs(
     )
   }
 
-  if (exec.signal.aborted) {
+  if (signal.aborted) {
     throw new EverythingError(
       `${toolName} was aborted before completion (tool timeout or caller cancellation)`,
       'ES_ABORTED',
@@ -1010,6 +1040,7 @@ function everythingSearchPresentResult(
 
 function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
   const timeoutMs = Number(config.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  const countTimeoutMs = Number(config.countTimeoutMs ?? DEFAULT_COUNT_TIMEOUT_MS)
   const graceMs = Number(config.graceMs ?? DEFAULT_GRACE_MS)
   const stderrMaxBytes = Number(config.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES)
   const rawOutputMaxBytes = Number(config.rawOutputMaxBytes ?? DEFAULT_RAW_OUTPUT_MAX_BYTES)
@@ -1264,6 +1295,7 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
         rawOutputMaxBytes,
         graceMs,
         stderrMaxBytes,
+        exec.signal,
       )
 
       if (run.noMatches) {
@@ -1312,7 +1344,15 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
       let total = results.length
       let truncated = false
       if (results.length >= input.maxResults) {
-        const exact = await countMatches(ctx, exec, input, rawOutputMaxBytes, graceMs, stderrMaxBytes)
+        const exact = await countMatches(
+          ctx,
+          exec,
+          input,
+          rawOutputMaxBytes,
+          graceMs,
+          stderrMaxBytes,
+          countTimeoutMs,
+        )
         if (exact === undefined) {
           // The listing is still valid, but it is full and the true total is
           // unknown, so report that more may exist rather than assert a false
@@ -1353,6 +1393,7 @@ const inject = ['tools', 'subprocess', 'systemPrompt']
 /** Plugin configuration fields and their defaults. */
 const configSchema = z.object({
   timeoutMs: z.number().default(DEFAULT_TIMEOUT_MS),
+  countTimeoutMs: z.number().default(DEFAULT_COUNT_TIMEOUT_MS),
   graceMs: z.number().default(DEFAULT_GRACE_MS),
   stderrMaxBytes: z.number().default(DEFAULT_STDERR_MAX_BYTES),
   rawOutputMaxBytes: z.number().default(DEFAULT_RAW_OUTPUT_MAX_BYTES),

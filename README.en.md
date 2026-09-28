@@ -141,6 +141,7 @@ Files and folders are matched by default; when the listing fills `max_results`, 
 | Key | Default | Description |
 |---|---|---|
 | `timeoutMs` | 1200000 | Single-search timeout (ms) |
+| `countTimeoutMs` | 5000 | Budget for the follow-up count query alone (ms); past it the exact total is dropped for "more may exist", and the listing already fetched is unaffected |
 | `graceMs` | 3000 | Process-termination grace period past timeout (ms) |
 | `stderrMaxBytes` | 65536 | Stderr tail budget for diagnostics (bytes) |
 | `rawOutputMaxBytes` | 20000000 | Max stdout captured for parsing (bytes) |

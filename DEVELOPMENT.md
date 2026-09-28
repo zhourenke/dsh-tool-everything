@@ -9,7 +9,7 @@
 |---|---|
 | `src/index.ts` | 唯一源码：Cordis 插件，导出 `{ apply, Config, inject, name }` |
 | `lib/index.js` + `lib/types/` | 构建产物（`tsc` 输出），**随源码一起提交**（路线 A，git 分发） |
-| `test/index.test.mjs` | `node --test` 测试（当前 54 项） |
+| `test/index.test.mjs` | `node --test` 测试（当前 55 项） |
 | `cordis.patch.yml` | `dsh.bundle.patch` 指向的 profile 层 patch |
 | `package.json` | `main`/`exports["."]` 指向 `lib/index.js`；`dsh.bundle` 声明 patch 文件 |
 
@@ -103,13 +103,23 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 修复（提交 `06f485f`）：输出时 `typeof entry.extension === 'string'` 才带上该字段；目录仍可凭路径结尾 `\` 识别。**任何新字段都要防同类问题**：输出前断言所有值非 null（测试里有通用不变式）。
 
+### 7. 附加查询要有独立预算，且必须能降级
+
+`max_results` 被填满时，插件会再发一次 `es -get-result-count` 去拿精确总数。它只是**附加信息**：列表已经拿到手，拿不到总数时 `countMatches` 返回 `undefined`，调用方降级为"可能还有更多"（`truncated: true`）。
+
+这条降级路径只有在计数查询**不跟主查询共用那 20 分钟预算**时才有意义。原先两者共用 `timeoutMs`，于是一次卡住的 `es` 会把整个调用的预算吃光：宿主在 `1200000 ms` 处终止调用，**连已经取到的列表一起丢掉**（2026-09-28 实测，见「经验沉淀」）。现在计数查询跑在 `AbortSignal.any([exec.signal, AbortSignal.timeout(countTimeoutMs)])` 上——`any` 保留"调用方取消"的原语义，`timeout` 给计数自己一个短预算（默认 5 秒，配置项 `countTimeoutMs`），而 `AbortSignal.timeout` 的定时器是 unref 的，不会吊住进程。
+
+测试里假 seam 的形态不是凭空写的：计数用例只在被 abort 时结束，结束值 `{ signal: 'SIGTERM', exitCode: null }` 取自 `SubprocessOutcome` 的声明，而"abort 会终止子进程"既有 seam 文档（"the spec's abort signal" 启动终止其托管范围）也有实测兜底——宿主今天终止那 5 个卡住的调用后，没有任何 `es` 残留。
+
+**推广**：凡是"主结果之外的附加调用"（计数、探测、补充元数据）都要有自己的短预算与降级路径，否则它会把主结果的预算吃光；宿主只在**整个调用**的超时点终止，不会替你把两者分开。
+
 ## 测试要点
 
 - mock es 输出必须贴近真实 es 的形态，否则 schema 违规测不出来——**mock 发不出的字段，测试永远看不见它违反 schema**。fixture 至少覆盖：目录（`extension: null`）、无扩展名文件（`extension: ""`）、普通文件（`extension: "js"`）。
 - **注入类缺陷只能靠断言命令串本身**：mock seam 不经过真实 cmd，`sort_by`/`attributes` 里裸露的 `&` 在 mock 下"测试全绿"。所以回归测试断言的是构造出来的命令行（合法值被白名单收窄成 `-sort date-modified-ascending`、`/aR-H`，非法值在 spawn 之前就抛错），以及"被拒绝的调用不得 spawn"。
 - 通用断言：遍历每条结果，**任何字段值不得为 null**。
 - 判断插件有没有被 DSH 加载，用会话记录的最新一轮 `request/header` 工具表，别问模型"你看到新提示词了吗"（模型侧策略会拒绝逐字复述，且观感可能滞后于下发内容）。
-- 当前 54 项全部通过。
+- 当前 55 项全部通过。
 
 ## 面向模型的文案（两处落点，互不同步）
 
@@ -164,7 +174,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 同时测到 **Everything（PID 3228）持续占满一个核**：5 秒墙钟内消耗 4.97 秒 CPU；约 40 分钟前该进程累计 CPU 为 `5151 s`，故障时已到 `13784 s`。`es` 进程随后全部消失（宿主超时会回收整棵进程树），没有残留。
 
-- **事实**：那 5 个字母"计数是否被过滤"因此没测出来；查询挂住时插件侧没有提前失败的手段，整个调用会耗满 20 分钟预算再失败，**连已经拿到的列表一起丢掉**。
+- **事实**：那 5 个字母"计数是否被过滤"因此没测出来；查询挂住时插件侧没有提前失败的手段，整个调用会耗满 20 分钟预算再失败，**连已经拿到的列表一起丢掉**（附加计数查询现已改为独立短预算，见「实现要点」；主查询本身仍然只能等宿主的预算）。
 - **推断（未证实）**：触发条件是"全盘 `attributes` 查询"这类需要逐条评估属性的工作（Everything 1.4 可能需要为整个索引准备属性数据），并发会放大它；我几次用 `Stop-Process -Force` 强杀卡住的 `es` 也可能有份。
 - **与本次改动无关**：挂住时宿主跑的还是改动前的 `lib/`。
 

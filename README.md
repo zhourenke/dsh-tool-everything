@@ -141,6 +141,7 @@ dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `timeoutMs` | 1200000 | 单次搜索超时（毫秒） |
+| `countTimeoutMs` | 5000 | 附加计数查询的独立预算（毫秒）；超时就放弃精确总数，改报"可能还有更多"，已取到的列表不受影响 |
 | `graceMs` | 3000 | 超时后终止进程的宽限（毫秒） |
 | `stderrMaxBytes` | 65536 | 报错时截取的 stderr 上限（字节） |
 | `rawOutputMaxBytes` | 20000000 | 输出解析上限（字节） |

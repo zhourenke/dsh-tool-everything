@@ -89,6 +89,36 @@ function listingThenCount(listingStdout, countStdout) {
       : succeedWith(listingStdout)()
 }
 
+/**
+ * A responder whose listing succeeds immediately while the follow-up count
+ * never finishes on its own: it settles only when the seam aborts it, which is
+ * what the real subprocess seam does when the caller's signal fires (the
+ * plugin's count deadline aborts that same signal). Models a wedged `es`.
+ *
+ * The settled outcome matches the seam's declared vocabulary
+ * (`SubprocessOutcome`: `exitCode` null when a signal killed the process), and
+ * the behaviour is not invented: `dsh-subprocess` documents that "the spec's
+ * abort signal" starts termination of the provider's managed range, and a live
+ * observation backs it — when the host aborted five wedged calls on
+ * 2026-09-28, not one `es` process survived.
+ */
+function listingThenHangingCount(listingStdout) {
+  return (spec) => {
+    if (!spec.argv[2].includes('-get-result-count')) return succeedWith(listingStdout)()
+    return {
+      done: new Promise((resolve) => {
+        spec.signal.addEventListener('abort', () => resolve({ signal: 'SIGTERM', exitCode: null }), {
+          once: true,
+        })
+      }),
+      collected: {
+        stdout: { readFrom: () => ({ text: '', lossy: false }) },
+        stderr: { readFrom: () => ({ text: '', lossy: false }) },
+      },
+    }
+  }
+}
+
 /** The `cmd /c` command string of the first spawn. */
 function commandLine(harness) {
   assert.ok(harness.spawnCalls.length > 0, 'expected a spawn call')
@@ -111,6 +141,7 @@ test('the shipped artifact exposes the cordis plugin contract', () => {
 test('the configuration schema defaults every cap', () => {
   assert.deepEqual(new Config({}), {
     timeoutMs: 1200000,
+    countTimeoutMs: 5000,
     graceMs: 3000,
     stderrMaxBytes: 65536,
     rawOutputMaxBytes: 20000000,
@@ -672,6 +703,26 @@ test('a full listing whose count cannot be read reports that more may exist', as
 
   assert.equal(result.truncated, true, 'degrade to "may be more", never assert a capped count as the total')
   assert.equal(result.total, 2)
+})
+
+test('a count that never answers is abandoned on its own budget, keeping the listing', async () => {
+  const listed = Array.from({ length: 2 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
+  const harness = createHarness({ respond: listingThenHangingCount(JSON.stringify(listed)) })
+  const tool = await loadTool(harness, { countTimeoutMs: 60 })
+
+  const started = Date.now()
+  const result = await tool.execute({ query: '*.pdf', max_results: 2 }, execContext())
+  const elapsed = Date.now() - started
+
+  assert.equal(harness.spawnCalls.length, 2, 'the count query is still attempted')
+  assert.equal(result.results.length, 2, 'the listing survives a count that never answers')
+  assert.equal(result.truncated, true, 'an unreadable count degrades to "more may exist"')
+  assert.equal(result.total, 2)
+  assert.ok(elapsed < 2000, `the count deadline must fire on its own budget; took ${elapsed} ms`)
+  // The count aborts on a signal derived from the caller's, so giving up on the
+  // count never cancels the call itself.
+  assert.equal(harness.spawnCalls[0].signal.aborted, false, "the caller's signal stays clean")
+  assert.equal(harness.spawnCalls[1].signal.aborted, true, "the count's own deadline fired")
 })
 
 test('a listing that exactly equals the limit is not called truncated', async () => {
