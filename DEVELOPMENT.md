@@ -9,7 +9,7 @@
 |---|---|
 | `src/index.ts` | 唯一源码：Cordis 插件，导出 `{ apply, Config, inject, name }` |
 | `lib/index.js` + `lib/types/` | 构建产物（`tsc` 输出），**随源码一起提交**（路线 A，git 分发） |
-| `test/index.test.mjs` | `node --test` 测试（当前 53 项） |
+| `test/index.test.mjs` | `node --test` 测试（当前 54 项） |
 | `cordis.patch.yml` | `dsh.bundle.patch` 指向的 profile 层 patch |
 | `package.json` | `main`/`exports["."]` 指向 `lib/index.js`；`dsh.bundle` 声明 patch 文件 |
 
@@ -59,7 +59,11 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 
 查询**绝不用引号**：es 会把引号原样传给 Everything，其中 `"..."` 表示精确短语搜索，会静默返回 0 结果。
 
-**非查询参数走白名单，不走转义。** `sort_by` 与 `attributes` 同样会被拼进这条 `cmd /c` 字符串，早期版本原样透传，于是 `sort_by: "name & echo X"` 让 cmd 执行了两条命令、`attributes: "R & echo X"` 同理（实测：构造出的命令行里 `&` 裸露，而 `cmd /c "echo a & echo b"` 确实输出两行）。现在 `parseEverythingArgs` 在拼串之前就把两者收窄：`sort_by` 只接受 schema 里写明的那 7 个字段（大小写不敏感、统一小写），`attributes` 必须是 DIR 风格字母加 `-`/`+`。非法值抛错并说明合法取值（`sort_by` 列出全部 7 个，`attributes` 给示例），连 es 都不会 spawn。**新增任何进入命令行的参数都要按同一模式处理**——白名单比转义更好，因为错误信息能直接告诉调用方合法取值。
+**非查询参数走白名单，不走转义。** `sort_by` 与 `attributes` 同样会被拼进这条 `cmd /c` 字符串，早期版本原样透传，于是 `sort_by: "name & echo X"` 让 cmd 执行了两条命令、`attributes: "R & echo X"` 同理（实测：构造出的命令行里 `&` 裸露，而 `cmd /c "echo a & echo b"` 确实输出两行）。现在 `parseEverythingArgs` 在拼串之前就把两者收窄：`sort_by` 只接受 schema 里写明的那 7 个字段（大小写不敏感、统一小写），`attributes` 只接受那 13 个 DIR 字母（`R H S D A V N T L C O I E`，每个字母可带 `-`/`+` 前缀）。非法值抛错并列出合法取值（`sort_by` 列全部 7 个，`attributes` 列全部 13 个），连 es 都不会 spawn。
+
+**字母集合本身必须校验，只校验字符形状不够。** 实测（同一查询 `*.md`，全部走本插件）：`attributes: 'Z'` 与不加过滤返回**同一个总数 17807**，而 `attributes: 'D'` 只有 4 条——**es 对未知字母静默忽略**。逐个核对合法字母时又测到 `R` → 657、`A` → 17635，都 ≠ 17807，确认合法字母确实在过滤；而 `H`、`S`、`V`、`N`、`T` 五个**始终没测出结果**（见「经验沉淀」里的那次故障），所以"这 13 个字母都被 es 认作过滤器"目前只有 `R`/`A`/`D` 有实测、其余 10 个属于推断（依据是它们与 `-attribs` 输出的字母集完全相同）。也就是说，一个猜出来的字母（比如给"可执行"猜 `X`）会返回看起来完全正常、实际**未过滤**的结果集，这正是本工作区最忌讳的失败类别。所以白名单写的是那 13 个字母本身（`ATTRIBUTE_LETTERS`，见 `src/index.ts`），`formatAttributes` 的映射表用同一套字母，测试里有一条不变式把两张表钉在同一集合上。es 自己只拒绝非字母字符（`/aZZ9` → `Error 4: Unknown attribute: 9`，退出码 4），而插件永远不会走到那个分支——正则先把字符挡住了。
+
+**新增任何进入命令行的参数都要按同一模式处理**——白名单比转义更好，因为错误信息能直接告诉调用方合法取值。
 
 `path` 参数**不折叠进查询**，而是作为 es 的 `-path` 选项传递（广域 `content:` 搜索则用 `-parent`）。早期版本用 `path:` 前缀折叠，两种失败方式均已实测：
 
@@ -105,7 +109,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **注入类缺陷只能靠断言命令串本身**：mock seam 不经过真实 cmd，`sort_by`/`attributes` 里裸露的 `&` 在 mock 下"测试全绿"。所以回归测试断言的是构造出来的命令行（合法值被白名单收窄成 `-sort date-modified-ascending`、`/aR-H`，非法值在 spawn 之前就抛错），以及"被拒绝的调用不得 spawn"。
 - 通用断言：遍历每条结果，**任何字段值不得为 null**。
 - 判断插件有没有被 DSH 加载，用会话记录的最新一轮 `request/header` 工具表，别问模型"你看到新提示词了吗"（模型侧策略会拒绝逐字复述，且观感可能滞后于下发内容）。
-- 当前 53 项全部通过。
+- 当前 54 项全部通过。
 
 ## 面向模型的文案（两处落点，互不同步）
 
@@ -115,6 +119,8 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 | `defineTool` 的 `description` | 工具表 | `request/header` 的 `data.header.tools[]` |
 
 同时改两处后，系统提示词的长度增量**不等于**两处增量之和——工具描述根本不在 system 槽里。验证改没改上，以记录为准。
+
+工具用 `throw` 报出的参数校验错误也是**模型可见文案**（第三处，容易漏）：`sort_by` 与 `attributes` 的合法取值就写在那条报错里，改白名单时必须一起改——否则模型只会知道"这个值不行"，而不知道哪些值行。
 
 ## 运行时依赖（与 DSH 版本匹配）
 
@@ -151,6 +157,18 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **spill 有意不接**：seam 提供 `SubprocessOutputRead.spillPath`（大输出落盘），但官方 `completeStdout` 在 lossy 时**直接失败**而不读 spill——不解析可能不完整的流。本插件跟随该决定。
 
 ## 经验沉淀
+
+### 观测到的一次 es 全面挂起（2026-09-28）
+
+排查 `attributes` 字母时，一批 **5 个并发**的全盘属性查询（`attributes` 分别为 `H`/`S`/`V`/`N`/`T`，其余参数相同：`query: '*.md'`、`max_results: 1`）全部耗到宿主的工具超时（`1200000 ms`，与插件 `DEFAULT_TIMEOUT_MS` 同值）才失败。此后连**不带任何过滤**的 `es -n 3 *.md` 也不再返回——而同一命令 20 分钟前只要约 100 ms。
+
+同时测到 **Everything（PID 3228）持续占满一个核**：5 秒墙钟内消耗 4.97 秒 CPU；约 40 分钟前该进程累计 CPU 为 `5151 s`，故障时已到 `13784 s`。`es` 进程随后全部消失（宿主超时会回收整棵进程树），没有残留。
+
+- **事实**：那 5 个字母"计数是否被过滤"因此没测出来；查询挂住时插件侧没有提前失败的手段，整个调用会耗满 20 分钟预算再失败，**连已经拿到的列表一起丢掉**。
+- **推断（未证实）**：触发条件是"全盘 `attributes` 查询"这类需要逐条评估属性的工作（Everything 1.4 可能需要为整个索引准备属性数据），并发会放大它；我几次用 `Stop-Process -Force` 强杀卡住的 `es` 也可能有份。
+- **与本次改动无关**：挂住时宿主跑的还是改动前的 `lib/`。
+
+教训：探测这种可能让索引长时间忙的查询要**串行、小步**，发现第一个查询变慢就停下，别再并发加探测（我当时又并发发了一批，等于往火里加油）。
 
 工作区级文档 `PLUGIN_RELEASE_GUIDE.md`（位于仓库外的 `DSH_Workspace/CreatePlugin/`，**不随 git 分发**）收录了更完整的开发、发布与排错经验：构建提交纪律、连接点安装的连带后果、模型文案的落点与取证、`tsc` 拼接缝等。开发时对照查阅。
 

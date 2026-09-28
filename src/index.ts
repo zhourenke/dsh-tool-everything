@@ -295,11 +295,37 @@ const SORT_FIELDS = [
 ] as const
 
 /**
- * Everything's `/a` attribute filter: DIR-style attribute letters, with `-` to
- * exclude one and `+` to require it (e.g. `R`, `R-H`, `RHS`). Same whitelist
- * reason as SORT_FIELDS — the value reaches cmd verbatim.
+ * The DIR attribute letters Everything works with — the same vocabulary
+ * `-attribs` reports back through `formatAttributes`. Kept in one place so the
+ * `/a` whitelist, the model-facing parameter copy and the error message cannot
+ * drift apart.
+ *
+ * Measured as honoured `/a` filters: R, A and D. The other ten follow from the
+ * `-attribs` vocabulary rather than from a direct filter measurement (the probe
+ * that would have covered them ran into the Everything hang recorded in
+ * DEVELOPMENT.md).
  */
-const ATTRIBUTE_FILTER = /^[A-Za-z+-]{1,32}$/
+const ATTRIBUTE_LETTERS = 'RHSDAVNTLCOIE'
+
+/**
+ * Everything's `/a` attribute filter: those letters, each optionally prefixed
+ * with `-` to exclude it (`R`, `R-H`, `RHS`).
+ *
+ * The LETTERS are checked, not merely the character shape. Measured against the
+ * real es, `/aZ` returns exactly the same result set as no filter at all
+ * (17807 for `*.md`, identical both ways) — an unknown letter is silently
+ * ignored — while `/aD` narrows that same query to 4 entries. A shape-only
+ * whitelist such as `[A-Za-z+-]` therefore let a guessed letter (`X` for
+ * "executable", say) produce an unfiltered result set that looks entirely
+ * normal, which is the worst failure mode this tool has: a plausible wrong
+ * answer. es itself rejects non-letters (`/aZZ9` -> `Error 4: Unknown
+ * attribute: 9`, exit 4), but those characters never reach it because this
+ * regex refuses them first.
+ */
+const ATTRIBUTE_FILTER = new RegExp(`^(?:[+-]?[${ATTRIBUTE_LETTERS}]){1,32}$`, 'i')
+
+/** The letters above, space separated, for the model-facing error message. */
+const ATTRIBUTE_LETTER_LIST = ATTRIBUTE_LETTERS.split('').join(' ')
 
 /** Validate `sort_by` against the fields es sorts by, lower-casing it. */
 function parseSortField(raw: unknown): string {
@@ -315,7 +341,8 @@ function parseAttributeFilter(raw: unknown): string {
   const value = String(raw).trim()
   if (!ATTRIBUTE_FILTER.test(value)) {
     throw new Error(
-      'attributes must be DIR-style attribute letters, optionally with "-" or "+" ' +
+      `attributes must be one of the DIR letters ${ATTRIBUTE_LETTER_LIST}, ` +
+        'optionally prefixed with "-" or "+" to exclude or require one ' +
         `(for example "R", "R-H" or "RHS"); got "${value}"`,
     )
   }
@@ -706,6 +733,9 @@ function formatFiletime(filetime: unknown): string | undefined {
  * DIR-style letter string matching Everything's /a filter syntax
  * (e.g. 32 → 'A' for Archive, 6 → 'HS' for Hidden+System). Non-numeric
  * values pass through as-is; zero attributes render as '-'.
+ *
+ * The letters below are exactly ATTRIBUTE_LETTERS — the filter whitelist and
+ * this map have to stay the same vocabulary, and a test asserts it.
  */
 function formatAttributes(attr: unknown): string {
   if (typeof attr !== 'number') {
@@ -1078,10 +1108,13 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
       attributes: {
         type: 'string',
         description:
-          'DIR-style attribute filter. Examples: "R" (read-only), "H" (hidden), ' +
-          '"S" (system), "D" (directory), "A" (archive). ' +
+          'DIR-style attribute filter. Allowed letters: ' + ATTRIBUTE_LETTER_LIST + '. ' +
+          'The common ones are R (read-only), H (hidden), S (system), D (directory), ' +
+          'A (archive). ' +
           'Prefix with - to exclude: "R-H" means read-only AND not hidden. ' +
-          'Combine: "RHS" means read-only, hidden, and system.',
+          'Combine: "RHS" means read-only, hidden, and system. ' +
+          'Anything else is rejected, because es silently ignores an unknown letter ' +
+          'and would return unfiltered results.',
       },
       include_size: {
         type: 'boolean',

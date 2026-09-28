@@ -86,7 +86,7 @@ dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 | `match_path` | boolean | false | 在完整路径上匹配，而不只是文件名。 |
 | `file_only` | boolean | false | 只要文件（排除文件夹）。 |
 | `folder_only` | boolean | false | 只要文件夹（排除文件）。 |
-| `attributes` | string | — | 属性过滤，DIR 风格：`R` 只读、`H` 隐藏、`S` 系统、`D` 目录、`A` 归档；`-` 前缀表示排除（`"R-H"` = 只读且非隐藏）；可组合（`"RHS"` = 只读+隐藏+系统）。 |
+| `attributes` | string | — | 属性过滤，DIR 风格，**只接受这些字母**：`R H S D A V N T L C O I E`（常用：`R` 只读、`H` 隐藏、`S` 系统、`D` 目录、`A` 归档）；`-` 前缀表示排除（`"R-H"` = 只读且非隐藏）；可组合（`"RHS"` = 只读+隐藏+系统）。其它字母会被拒绝——es 对未知字母静默忽略，会返回**未过滤**的结果。 |
 | `include_size` | boolean | false | 返回大小（字节）。 |
 | `include_date_modified` | boolean | false | 返回最后修改时间。 |
 | `include_date_created` | boolean | false | 返回创建时间。 |

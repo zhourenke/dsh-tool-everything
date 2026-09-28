@@ -86,7 +86,7 @@ Note: Everything's regex mode does **not** support `(...)` grouping — use top-
 | `match_path` | boolean | false | Match against the full path, not just the file name. |
 | `file_only` | boolean | false | Files only (exclude folders). |
 | `folder_only` | boolean | false | Folders only (exclude files). |
-| `attributes` | string | — | DIR-style attribute filter: `R` read-only, `H` hidden, `S` system, `D` directory, `A` archive; prefix `-` to exclude (`"R-H"` = read-only AND not hidden); combine (`"RHS"` = read-only, hidden, and system). |
+| `attributes` | string | — | DIR-style attribute filter, **only these letters**: `R H S D A V N T L C O I E` (common ones: `R` read-only, `H` hidden, `S` system, `D` directory, `A` archive); prefix `-` to exclude (`"R-H"` = read-only AND not hidden); combine (`"RHS"` = read-only, hidden, and system). Any other letter is rejected, because es silently ignores an unknown one and would return **unfiltered** results. |
 | `include_size` | boolean | false | Return the size in bytes. |
 | `include_date_modified` | boolean | false | Return the last-modified date. |
 | `include_date_created` | boolean | false | Return the creation date. |

@@ -360,20 +360,50 @@ test('sort_by is narrowed to the fields es sorts by before it reaches cmd', asyn
   assert.equal(hostile.spawnCalls.length, 0, 'a rejected sort must never reach the shell')
 })
 
-test('attributes is narrowed to DIR-style letters before it reaches cmd', async () => {
-  const harness = createHarness()
+test('attributes is narrowed to the DIR letters es actually filters by', async () => {
+  // An accepted value reaches es as /a<letters>. es matches the letters
+  // case-insensitively (the folder-only filter is emitted as lowercase /ad),
+  // so lower case must keep working.
+  for (const [given, emitted] of [['R-H', /\/aR-H/], ['r-h', /\/ar-h/]]) {
+    const accepted = createHarness()
+    const acceptedTool = await loadTool(accepted)
+    await acceptedTool.execute({ query: '*.pdf', attributes: given }, execContext())
+    assert.match(commandLine(accepted), emitted)
+  }
+
+  // `Z` has the right SHAPE but is not a letter es knows. Measured through this
+  // tool: `attributes: 'Z'` returned the same 17807 results as no filter at
+  // all, while `attributes: 'D'` narrowed that same query to 4 — es silently
+  // ignores an unknown letter, so a guessed one (`X` for "executable") would
+  // hand back a normal-looking, unfiltered result set.
+  for (const bad of ['Z', 'R & echo INJECTED']) {
+    const hostile = createHarness()
+    const hostileTool = await loadTool(hostile)
+    await assert.rejects(
+      () => hostileTool.execute({ query: '*.pdf', attributes: bad }, execContext()),
+      /attributes must be one of the DIR letters R H S D A V N T L C O I E/,
+    )
+    assert.equal(hostile.spawnCalls.length, 0, `a rejected filter ("${bad}") must never reach the shell`)
+  }
+})
+
+test('the attribute map and the filter whitelist cover the same letters', async () => {
+  const harness = createHarness({
+    respond: succeedWith(JSON.stringify([{ filename: 'C:\\a.txt', attributes: 0xffff }])),
+  })
   const tool = await loadTool(harness)
 
-  await tool.execute({ query: '*.pdf', attributes: 'R-H' }, execContext())
-  assert.match(commandLine(harness), /\/aR-H/)
+  const result = await tool.execute({ query: '*.txt', include_attributes: true }, execContext())
+  // 0xffff sets every bit the map knows, so this is its whole vocabulary.
+  assert.equal(result.results[0].attributes, 'RHSDAVNTLCOIE')
 
-  const hostile = createHarness()
-  const hostileTool = await loadTool(hostile)
-  await assert.rejects(
-    () => hostileTool.execute({ query: '*.pdf', attributes: 'R & echo INJECTED' }, execContext()),
-    /attributes must be DIR-style attribute letters/,
-  )
-  assert.equal(hostile.spawnCalls.length, 0, 'a rejected filter must never reach the shell')
+  // Feeding that vocabulary straight back as a filter must be accepted: the
+  // letters the tool reports are exactly the letters it filters by. Adding a
+  // letter to only one of the two lists fails this test.
+  const accepted = createHarness()
+  const acceptedTool = await loadTool(accepted)
+  await acceptedTool.execute({ query: '*.txt', attributes: 'RHSDAVNTLCOIE' }, execContext())
+  assert.match(commandLine(accepted), /\/aRHSDAVNTLCOIE/)
 })
 
 test('-r is emitted last, immediately before the query', async () => {
