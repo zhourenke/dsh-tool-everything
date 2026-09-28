@@ -1012,6 +1012,31 @@ function everythingSearchPresentCall(args: Record<string, unknown>): ToolCallVie
 }
 
 /**
+ * Whether `total` is a proven exact count or only a lower bound.
+ *
+ * The count pass can fail or run out of its own budget, and then `total` is just
+ * the number of rows the listing returned while `truncated` is true. A listing
+ * that did not fill `max_results` is its own total, and a successful count that
+ * found more than the listing returned always satisfies
+ * `total > results.length` — so `truncated && total <= listed` means exactly
+ * "the true total is unknown". Measured with `countTimeoutMs` forced to 1 ms:
+ * the old wording reported `Found 1 result for "*.md"` for a query with 17807
+ * matches, while the system prompt says "Found N" is the TRUE match count. Both
+ * renderers therefore say "at least" rather than state an unproven number.
+ *
+ * `listed` must be the uncapped row count where one is available.
+ */
+function totalIsExact(total: number, truncated: boolean, listed: number): boolean {
+  return !truncated || total > listed
+}
+
+/** The `Found N result(s) for "query"` phrase, never stating an unproven exact number. */
+function foundPhrase(total: number, query: string, exact: boolean): string {
+  const counted = `${total} result${total === 1 ? '' : 's'}`
+  return `Found ${exact ? '' : 'at least '}${counted} for "${query}"`
+}
+
+/**
  * Completed-result card: the host's `SearchPathsResultView` — the same
  * `card: 'search'` / `shape: 'paths'` view its own glob tool returns, so a
  * capable UI renders this as a native search card. Falls back to the generic
@@ -1022,12 +1047,16 @@ function everythingSearchPresentResult(
   result: ToolResult,
 ): ToolResultView | undefined {
   if (result.isError) return undefined
-  const meta = result.meta as { total: number; truncated: boolean; query: string; results: string[] } | undefined
+  const meta = result.meta as
+    | { total: number; truncated: boolean; query: string; results: string[]; totalIsExact?: boolean }
+    | undefined
   if (meta === undefined) return undefined
   return {
     card: 'search',
     shape: 'paths',
-    title: `Found ${meta.total} result${meta.total === 1 ? '' : 's'} for "${meta.query}"`,
+    // Absent on a meta projection replayed from an older session log, which
+    // predates the flag and could only ever have stated an exact total.
+    title: foundPhrase(meta.total, meta.query, meta.totalIsExact !== false),
     paths: meta.results,
     truncated: meta.truncated,
     total: meta.total,
@@ -1059,7 +1088,8 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
       'content:. Output is a numbered list of [i] path [metadata]; metadata is attached only for the fields ' +
       'you request via include_* (size, modified, created, accessed, ext, attributes). "Found N" is the TRUE ' +
       'match count, obtained by a separate count pass — NOT the number of rows listed; "(showing first M)" ' +
-      'means max_results (default 50, max 100000) capped the list. Prefer glob/grep for workspace-scoped path ' +
+      'means max_results (default 50, max 100000) capped the list; "Found at least N" means that count could ' +
+      'not be read, so N counts the rows shown and more may exist. Prefer glob/grep for workspace-scoped path ' +
       'and content search; use this tool for paths outside the workspace, disk-wide sweeps, and metadata ' +
       'queries.\n\n' +
       '⚠️ content: REQUIRES a scope — the path parameter, or an inline path: in the query. With neither, the ' +
@@ -1233,7 +1263,14 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
         }
         let header = ''
         if (value.total > 0) {
-          header = `Found ${value.total} result${value.total === 1 ? '' : 's'} for "${value.query}"${value.truncated ? ` (showing first ${value.results.length})` : ''}`
+          // An unreadable count leaves `total` at the number of rows, so say
+          // "at least" instead of stating a number the count never proved.
+          const exact = totalIsExact(value.total, value.truncated, value.results.length)
+          header =
+            foundPhrase(value.total, value.query, exact) +
+            (value.truncated
+              ? ` (showing first ${value.results.length}${exact ? '' : '; the exact total is unavailable'})`
+              : '')
         }
         if (value.warning) {
           header = `${header}\n\n⚠️ ${value.warning}`
@@ -1269,6 +1306,10 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
           truncated: value.truncated || capped.truncated,
           query: value.query,
           results: capped.paths,
+          // Computed from the UNCAPPED rows: the card's own path list can be cut
+          // by the byte budget, which would hide the fact that `total` is only a
+          // floor (see totalIsExact).
+          totalIsExact: totalIsExact(value.total, value.truncated, value.results.length),
         }
       },
     },

@@ -858,6 +858,44 @@ test('render reports the zero-match case plainly', async () => {
   assert.equal(blocks[0].text, 'No files found')
 })
 
+test('render says "at least" when the count proved no exact total', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  // A count that could not be read leaves `total` at the number of rows.
+  const floor = tool.output.render({}, {
+    total: 2,
+    truncated: true,
+    query: '*.pdf',
+    results: [{ path: 'C:\\a.pdf' }, { path: 'C:\\b.pdf' }],
+  })
+  assert.match(
+    floor[0].text,
+    /Found at least 2 results for "\*\.pdf" \(showing first 2; the exact total is unavailable\)/,
+  )
+
+  // The card carries the same honesty, and it survives the byte cap on its own
+  // path list: the flag is computed from the uncapped rows.
+  const meta = tool.output.presentationMeta({}, {
+    total: 2,
+    truncated: true,
+    query: '*.pdf',
+    results: [{ path: 'C:\\a.pdf' }, { path: 'C:\\b.pdf' }],
+  })
+  const view = tool.presentResult({ query: '*.pdf' }, { isError: false, meta })
+  assert.equal(view.title, 'Found at least 2 results for "*.pdf"')
+
+  // A count that did prove more than the listing shows keeps the exact wording.
+  const exact = tool.output.render({}, {
+    total: 64546,
+    truncated: true,
+    query: '*.pdf',
+    results: [{ path: 'C:\\a.pdf' }, { path: 'C:\\b.pdf' }],
+  })
+  assert.match(exact[0].text, /Found 64546 results for "\*\.pdf" \(showing first 2\)/)
+  assert.doesNotMatch(exact[0].text, /at least/)
+})
+
 test('a size past the TB unit is capped instead of printing an undefined unit', async () => {
   const harness = createHarness()
   const tool = await loadTool(harness)
@@ -895,6 +933,7 @@ test('presentationMeta projects the discovered path list', async () => {
     truncated: false,
     query: '*.pdf',
     results: ['C:\\a\\one.pdf', 'C:\\b\\two.pdf'],
+    totalIsExact: true,
   })
 })
 

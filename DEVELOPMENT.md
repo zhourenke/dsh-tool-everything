@@ -9,7 +9,7 @@
 |---|---|
 | `src/index.ts` | 唯一源码：Cordis 插件，导出 `{ apply, Config, inject, name }` |
 | `lib/index.js` + `lib/types/` | 构建产物（`tsc` 输出），**随源码一起提交**（路线 A，git 分发） |
-| `test/index.test.mjs` | `node --test` 测试（当前 55 项） |
+| `test/index.test.mjs` | `node --test` 测试（当前 56 项） |
 | `cordis.patch.yml` | `dsh.bundle.patch` 指向的 profile 层 patch |
 | `package.json` | `main`/`exports["."]` 指向 `lib/index.js`；`dsh.bundle` 声明 patch 文件 |
 
@@ -111,6 +111,8 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 测试里假 seam 的形态不是凭空写的：计数用例只在被 abort 时结束，结束值 `{ signal: 'SIGTERM', exitCode: null }` 取自 `SubprocessOutcome` 的声明，而"abort 会终止子进程"既有 seam 文档（"the spec's abort signal" 启动终止其托管范围）也有实测兜底——宿主今天终止那 5 个卡住的调用后，没有任何 `es` 残留。
 
+降级之后还有一步：计数拿不到时 `total` 只是**下界**（等于返回的行数），于是正文那句话说成 `Found at least N results for "…" (showing first N; the exact total is unavailable)`，而不是 `Found N`。否则 17807 个匹配会被写成 `Found 1 result`，而系统提示词那边明确写着 `"Found N" is the TRUE match count`——模型照读就会给出一个"看起来很确定"的错误答案。实测：把 `countTimeoutMs` 临时钉成 `1 ms`，旧文案输出 `Found 1 result for "*.md" (showing first 1)`，同一调用里列表本身是完好的。判定用 `totalIsExact`：计数成功且总数大于列表长度时 `total > 已返回行数` 必然成立，所以 `truncated && total <= 行数` 恰好等价于"总数未知"；卡片那边要传**未截断**的行数（`presentationMeta` 自己的路径预算会砍短那份列表，用砍过的长度判断会漏判）。
+
 **推广**：凡是"主结果之外的附加调用"（计数、探测、补充元数据）都要有自己的短预算与降级路径，否则它会把主结果的预算吃光；宿主只在**整个调用**的超时点终止，不会替你把两者分开。
 
 ## 测试要点
@@ -119,7 +121,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **注入类缺陷只能靠断言命令串本身**：mock seam 不经过真实 cmd，`sort_by`/`attributes` 里裸露的 `&` 在 mock 下"测试全绿"。所以回归测试断言的是构造出来的命令行（合法值被白名单收窄成 `-sort date-modified-ascending`、`/aR-H`，非法值在 spawn 之前就抛错），以及"被拒绝的调用不得 spawn"。
 - 通用断言：遍历每条结果，**任何字段值不得为 null**。
 - 判断插件有没有被 DSH 加载，用会话记录的最新一轮 `request/header` 工具表，别问模型"你看到新提示词了吗"（模型侧策略会拒绝逐字复述，且观感可能滞后于下发内容）。
-- 当前 55 项全部通过。
+- 当前 56 项全部通过。
 
 ## 面向模型的文案（两处落点，互不同步）
 
@@ -127,10 +129,11 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 |---|---|---|
 | `ctx.systemPrompt.section({...})` | 请求的 system 槽 | `system/message` 的 `data.message.content[0].text` |
 | `defineTool` 的 `description` | 工具表 | `request/header` 的 `data.header.tools[]` |
+| `output.render` 返回的 `text` | 工具结果正文 | 该次工具调用的 result 块 |
 
-同时改两处后，系统提示词的长度增量**不等于**两处增量之和——工具描述根本不在 system 槽里。验证改没改上，以记录为准。
+同时改两处后，系统提示词的长度增量**不等于**两处增量之和——工具描述根本不在 system 槽里。验证改没改上，以记录为准。表格里前两处会一起出现在同一次请求里，但**解释第三处的规则写在第一处**：正文里 `Found at least N …` 是什么意思，由系统提示词那句 `"Found at least N" means that count could not be read` 交代——改一处就必须改另一处，它们不会互相提醒。
 
-工具用 `throw` 报出的参数校验错误也是**模型可见文案**（第三处，容易漏）：`sort_by` 与 `attributes` 的合法取值就写在那条报错里，改白名单时必须一起改——否则模型只会知道"这个值不行"，而不知道哪些值行。
+工具用 `throw` 报出的参数校验错误也是**模型可见文案**（还有一处，容易漏）：`sort_by` 与 `attributes` 的合法取值就写在那条报错里，改白名单时必须一起改——否则模型只会知道"这个值不行"，而不知道哪些值行。
 
 ## 运行时依赖（与 DSH 版本匹配）
 
