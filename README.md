@@ -112,6 +112,7 @@ dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 - **必须限定范围**：通过 `path` 参数，或查询内联 `path:...`，二选一。完全没有范围会被**直接拒绝**。
 - **广域范围会被收窄**：对驱动器根目录（`C:\`）、`C:\Users`（及其下一层）、`C:\Documents and Settings`（同理）、当前用户主目录搜索时，自动降级为**只搜直接子级（一层，不递归）**，并在 `warning` 中说明。
 - **推荐**：搜内容时给具体目录，例如 `content:secret_key` + `path: C:\Projects\MyApp`。
+- **范围要按文件数估，不能按路径形态估——守卫放行不等于便宜**：上面那条判定只看路径的**形状**。像 `~\.dsh` 这种**通过了守卫**的目录，里面仍有整个 profile 的 `node_modules` 和 Chromium 的 CDP profile；实测这样一次 `content:` 查询一直跑到该次调用的超时上限（默认 20 分钟）才被宿主终止，之后 Everything 还持续占满一个核一段时间才安静下来。
 
 ## 给 Agent 的调用要点
 

@@ -112,6 +112,7 @@ Files and folders are matched by default; when the listing fills `max_results`, 
 - **A scope is required**: provide it via the `path` parameter or an inline `path:` in the query — one of the two. With no scope at all, the search is **rejected outright**.
 - **Broad scopes are restricted**: targeting a drive root (`C:\`), `C:\Users` (or one level below it), `C:\Documents and Settings` (likewise), or the current user's home directory is automatically downgraded to **immediate children only (one level, no recursion)**, with a `warning` in the results.
 - **Recommended**: give a concrete directory, e.g. `content:secret_key` + `path: C:\Projects\MyApp`.
+- **Estimate a scope by file count, not by path shape — passing the guard is not the same as being cheap**: the check above looks only at the path's **shape**. A directory like `~\.dsh` **passes** it yet still holds a whole profile's `node_modules` and Chromium's CDP profile; measured, one such `content:` query ran to the call's timeout ceiling (20 minutes by default) before the host terminated it, and Everything then kept a core busy for a while before settling.
 
 ## Notes for agents calling the tool
 
