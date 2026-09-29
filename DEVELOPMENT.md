@@ -9,8 +9,9 @@
 |---|---|
 | `src/index.ts` | 唯一源码：Cordis 插件，导出 `{ apply, Config, inject, name }` |
 | `lib/index.js` + `lib/types/` | 构建产物（`tsc` 输出），**随源码一起提交**（路线 A，git 分发） |
-| `test/index.test.mjs` | `node --test` 测试（当前 56 项） |
+| `test/index.test.mjs` | `node --test` 测试（当前 58 项） |
 | `cordis.patch.yml` | `dsh.bundle.patch` 指向的 profile 层 patch |
+| `icon.svg` + `locale/{en,zh}.json` | 插件列表的显示元数据：宿主**不激活插件**就能读到名称、说明与图标（见「实现要点」第 8 节） |
 | `package.json` | `main`/`exports["."]` 指向 `lib/index.js`；`dsh.bundle` 声明 patch 文件 |
 
 ## 本地开发与构建
@@ -115,13 +116,27 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 **推广**：凡是"主结果之外的附加调用"（计数、探测、补充元数据）都要有自己的短预算与降级路径，否则它会把主结果的预算吃光；宿主只在**整个调用**的超时点终止，不会替你把两者分开。
 
+### 8. 插件列表的显示元数据（0.1.7 起，非运行时读取）
+
+插件列表里的名称、说明与图标**不经过插件代码**：宿主用 `readPluginMeta()` 直接读包内文件——`locale/<语言>.json` 里的 `{"meta":{"title":…,"description":…}}`，以及顶层 `icon` 字段指向的图片。因此这条路径**没有任何运行时测试能覆盖**：`apply` 的用例全绿，插件列表里照样可能没有名字。
+
+容易漏的地方：
+
+- **`locale/*.json` 必须写进 `exports`**（`"./locale/*.json": "./locale/*.json"`）：宿主是按 `<包名>/locale/en.json` 这个**模块说明符**解析的，没暴露就解析不到；解析不到返回 `undefined` 而**不是**异常，于是列表静默地没有名字。
+- **`icon.svg` 与 `locale/*.json` 都不在 npm 的自动包含集里**，必须同时写进 `files`；漏了只是"没有图标"，同样不报错。
+- **失败模式不对称**：图标无效只降级成"没有图标"，而 `meta.title` / `meta.description` **存在但不是非空字符串会让宿主整次读取抛错**，连已读到的图标一起丢。语言文件名（`en.json` / `zh.json`，文件名就是语言 id）与顶层字段名 `icon`（不是 `dsh.icon`）都由宿主规定，写错不会解析成别的东西，只是不生效。
+
+**验证要用宿主自己的函数，而不是本地结构接口**：`readPluginMeta(name, parentURL)` 的 `parentURL` 必须是**本插件实际解析到的那棵树**的基址（连接点安装时就是 profile 目录）——给错目录得到的是 `undefined` 而**不是异常**，这正是这类检查最容易假绿的地方；命令即指南「DSH 升级后的复核」第 13 步。本地那两条断言在 `test/index.test.mjs` 末尾：语言 id 合规、存在值必须是非空字符串、图标在包目录内且 ≤256 KiB、`exports` 与 `files` 两项都在。
+
+**它与 `lib/` 的改动不同：不需要重启 DSH。** 宿主是在 `listPlugins()` 里**按次现读**的，改完刷新插件列表就能看到。
+
 ## 测试要点
 
 - mock es 输出必须贴近真实 es 的形态，否则 schema 违规测不出来——**mock 发不出的字段，测试永远看不见它违反 schema**。fixture 至少覆盖：目录（`extension: null`）、无扩展名文件（`extension: ""`）、普通文件（`extension: "js"`）。
 - **注入类缺陷只能靠断言命令串本身**：mock seam 不经过真实 cmd，`sort_by`/`attributes` 里裸露的 `&` 在 mock 下"测试全绿"。所以回归测试断言的是构造出来的命令行（合法值被白名单收窄成 `-sort date-modified-ascending`、`/aR-H`，非法值在 spawn 之前就抛错），以及"被拒绝的调用不得 spawn"。
 - 通用断言：遍历每条结果，**任何字段值不得为 null**。
 - 判断插件有没有被 DSH 加载，用会话记录的最新一轮 `request/header` 工具表，别问模型"你看到新提示词了吗"（模型侧策略会拒绝逐字复述，且观感可能滞后于下发内容）。
-- 当前 56 项全部通过。
+- 当前 58 项全部通过。
 
 ## 面向模型的文案（两处落点，互不同步）
 
@@ -156,7 +171,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 | 绑定点 | 内容 | 为何必须 |
 |---|---|---|
-| `peerDependencies` | 四个宿主包 `^0.1.7-rc.2`，`cordis` 仍 `^4.0.2` | 预发布版本只被「同一 major.minor.patch 且带预发布」的范围放行，`^0.1.5-rc.1` 匹配不到 0.1.7-rc.2 |
+| `peerDependencies` | 四个宿主包 `^0.1.7-rc.2`，`cordis` 走自己的版本线 `^4.0.4` | 预发布版本只被「同一 major.minor.patch 且带预发布」的范围放行，`^0.1.5-rc.1` 匹配不到 0.1.7-rc.2；`cordis` 不参与宿主准入闸门（判定只看 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*`），工作区各插件一致写 `^4.0.4` |
 | `devDependencies` | 同一组版本号，精确 | 让 `tsc` 按新宿主校验；否则类型检查是假绿 |
 | 导入的宿主类型 | `SubprocessSpawnSpec`/`SubprocessHandle`/`SubprocessOutcome`、`PromptSection`、`ToolRunContext`/`ToolCallView`/`ToolResultView` | 本地结构接口**不会**因宿主漂移而报错（指南「类型定义原则」）；改用宿主类型后 `exec.agent.session.header.cwd` 这类访问点全部受检 |
 | `Config` 的标注 | `configSchema as unknown as ReturnType<typeof z.any>` | 三种写法实测：原样导出在**两份 schemastery 同版本**时能过、分叉时报 `TS2883`（"cannot be named without a reference to 'Schema'"）；直接标注两边都报 `TS2322`（`Schema` 的 `data` 参数逆变，与副本数量无关）；断言恒过但放弃检查。宿主换 schemastery 行会让两份实体重新分叉，断言让那时只多一个可移植声明、而不是构建直接红 |
@@ -168,6 +183,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **`presentationMeta` 封顶 16 KiB**：该投影**随会话日志持久化**，穷举搜索（`max_results: 100000`）不能把每条路径都写进去。按宿主 `capMetaBytes` 的口径逐条量**序列化后**的长度——Windows 路径的反斜杠在 JSON 里是 `\\`，用 `byteLength(path)` 估算会把预算低估约一倍（第一版就是这么错的，被新测试抓住）。
 - **stdout 双重校验**：`lossy` → `ES_RAW_OUTPUT_OVERFLOW`；未标记 lossy 但字节数超预算同样拒绝。与官方 `completeStdout` 同形，两个发现类工具的失败方式一致。
 - **spill 有意不接**：seam 提供 `SubprocessOutputRead.spillPath`（大输出落盘），但官方 `completeStdout` 在 lossy 时**直接失败**而不读 spill——不解析可能不完整的流。本插件跟随该决定。
+- **插件列表的显示元数据**：`locale/{en,zh}.json` + `icon.svg` + 顶层 `icon` 字段，宿主不激活插件就能读出名称、说明与图标（见「实现要点」第 8 节）。
 
 ## 经验沉淀
 

@@ -151,6 +151,8 @@ Files and folders are matched by default; when the listing fills `max_results`, 
 
 Tested with v0.1.7-rc.2 (September 2026).
 
+The name, description and icon shown in the plugin list come from `locale/{en,zh}.json` and `icon.svg` inside the package (DSH 0.1.7 display metadata), so what it does is visible without activating it.
+
 ## License
 
 MIT

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Everything 全盘搜索",
+    "description": "通过 Everything 索引（es.exe）在整块磁盘范围内按文件名与元数据搜文件，返回路径与调用方要求的元数据。"
+  }
+}

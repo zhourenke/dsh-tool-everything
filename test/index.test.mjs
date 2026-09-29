@@ -11,6 +11,9 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { apply, Config, inject, name } from '../lib/index.js'
 
 /** The host's own prompt-section registry, mirrored for the ordering tests. */
@@ -1024,4 +1027,66 @@ test('a capture over the byte cap is rejected even when it is not flagged lossy'
     () => tool.execute({ query: '*.pdf' }, execContext()),
     (error) => error.code === 'ES_RAW_OUTPUT_OVERFLOW',
   )
+})
+
+// ---------------------------------------------------------------------------
+// Plugin-list display metadata (read by the host without loading this plugin)
+//
+// readPluginMeta() never runs `apply`, so no test above can notice a broken
+// locale file, a missing icon entry or a `files` omission: the plugin keeps
+// working and only the plugin list goes blank. These two cases state the host's
+// own rules locally instead of depending on the host package.
+// ---------------------------------------------------------------------------
+
+const packageRoot = fileURLToPath(new URL('..', import.meta.url))
+const packageManifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
+
+/** The host's language-id rule for locale filenames. */
+const LANGUAGE_ID = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/u
+
+test('the display dictionaries the host reads are well formed', () => {
+  // The host resolves `<pkg>/locale/en.json` first and then reads every other
+  // *.json beside it as a dictionary named by its filename.
+  const localeDir = join(packageRoot, 'locale')
+  const files = readdirSync(localeDir).filter((entry) => entry.endsWith('.json'))
+  assert.ok(files.includes('en.json'), 'the host resolves en.json first, so it must exist')
+
+  for (const file of files) {
+    const language = file.slice(0, -'.json'.length)
+    assert.match(language, LANGUAGE_ID, `${file} must be named after a language id`)
+    const parsed = JSON.parse(readFileSync(join(localeDir, file), 'utf8'))
+    for (const field of ['title', 'description']) {
+      const value = parsed.meta?.[field]
+      // Absent is fine (the host falls back to package.json), but a present and
+      // unusable value throws and takes the whole metadata read down with it.
+      if (value === undefined) continue
+      assert.equal(typeof value, 'string', `${file}: meta.${field} must be a string`)
+      assert.notEqual(value.trim(), '', `${file}: meta.${field} must not be empty`)
+    }
+  }
+})
+
+test('the icon and locale files are declared, reachable, and inside the package', () => {
+  const icon = packageManifest.icon
+  assert.equal(typeof icon, 'string', 'the host reads the top-level icon field')
+  assert.ok(!isAbsolute(icon) && !/^[A-Za-z][A-Za-z\d+.-]*:/u.test(icon), 'the icon must be a relative path')
+
+  const root = realpathSync(packageRoot)
+  const iconFile = realpathSync(resolve(root, icon))
+  const local = relative(root, iconFile)
+  assert.ok(!local.startsWith('..') && !isAbsolute(local), 'the icon must stay inside the manifest directory')
+  assert.ok(['.svg', '.png', '.jpg', '.jpeg', '.webp'].includes(extname(icon).toLowerCase()), 'icon type')
+  assert.ok(statSync(iconFile).size <= 256 * 1024, 'the icon must be at most 256 KiB')
+
+  // Neither is in npm's automatic include set, and the host reaches locale files
+  // through the export map: dropping either entry degrades silently to a list
+  // row with no title, description or icon.
+  assert.equal(
+    packageManifest.exports?.['./locale/*.json'],
+    './locale/*.json',
+    'locale files must be exported for the host to resolve them',
+  )
+  for (const entry of ['icon.svg', 'locale/*.json']) {
+    assert.ok(packageManifest.files.includes(entry), `files must include ${entry}`)
+  }
 })

@@ -151,6 +151,8 @@ dsh plugin --profile web remove @zhourenke/dsh-tool-everything
 
 在 v0.1.7-rc.2（2026-09）下测试通过。
 
+插件列表里的名称、说明与图标来自包内的 `locale/{en,zh}.json` 与 `icon.svg`（DSH 0.1.7 起的显示元数据），因此不用激活插件就能看出它是做什么的。
+
 ## 许可证
 
 MIT

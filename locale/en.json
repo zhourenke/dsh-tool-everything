@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Everything Search",
+    "description": "Whole-disk file search on Windows through the Everything index (es.exe), returning paths with the metadata each call asks for."
+  }
+}
