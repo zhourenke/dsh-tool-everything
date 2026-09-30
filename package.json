@@ -1,7 +1,7 @@
 {
   "name": "@zhourenke/dsh-tool-everything",
   "description": "Model-facing Everything search tool (es.exe) — blazing-fast file search on Windows via the Everything engine",
-  "version": "0.1.7-rc2.1",
+  "version": "0.2.0-rc2.1",
   "publishConfig": {
     "access": "public"
   },
