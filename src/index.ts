@@ -12,6 +12,11 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
+// The host's shared timeout arithmetic, rather than fusing signals by hand: the
+// count budget below is exactly the "upstream cancellation + identifiable own
+// deadline" case this package exists for, and `timeoutOf` is what names the
+// cause afterwards (see countMatches).
+import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 
 // The host's own declarations are the contract for everything below. Importing
 // them instead of mirroring the shapes locally is what lets `tsc` catch host
@@ -57,6 +62,16 @@ const DEFAULT_TIMEOUT_MS = 1200000
  * the sort, so it is cheaper than the listing that preceded it).
  */
 const DEFAULT_COUNT_TIMEOUT_MS = 5000
+
+/**
+ * Abort code this plugin stamps on its own count budget.
+ *
+ * `deadline()` tags the abort reason it raises, and `timeoutOf(signal, code)`
+ * matches on that exact tag — so a count that ran out of its own budget is
+ * distinguishable from one aborted by the caller's signal, which includes the
+ * host's tool-call deadline armed from this tool's declared `timeoutMs`.
+ */
+const COUNT_TIMEOUT_CODE = 'ES_COUNT_TIMEOUT'
 
 /** Default terminate grace period for the `es` process (ms). */
 const DEFAULT_GRACE_MS = 3000
@@ -203,6 +218,12 @@ interface HostContext {
   /** The host's own `ToolDefinition`, so a tool shape that drifts fails `tsc`. */
   tools: { register(definition: ToolDefinition): unknown }
   subprocess: { spawn(spec: SubprocessSpawnSpec): SubprocessHandle }
+  /**
+   * Ambient host logger. Optional because nothing in this plugin's contract
+   * requires it: the one warning it carries (a count pass that yielded no total)
+   * is diagnostics, so a host without it must still run the tool.
+   */
+  logger?: { warn(message: string): unknown }
 }
 
 /**
@@ -664,12 +685,18 @@ function makeInvocation(esArgs: string[], env?: Record<string, string>): EsInvoc
  * succeeded is never failed by the follow-up query; the caller degrades to
  * reporting that more results may exist.
  *
- * The count runs on a deadline of its own (`countTimeoutMs`), combined with the
- * caller's signal rather than replacing it: a caller cancellation still aborts
- * the count exactly as before, while a count that merely hangs is abandoned on
- * its own budget and degrades through the catch below. `AbortSignal.timeout`
- * unref's its timer, so nothing keeps the process alive, and `any` forwards
- * every abort reason to the derived signal.
+ * The count runs on a deadline of its own (`countTimeoutMs`), armed through the
+ * host's own timeout arithmetic (`@deepseek-ai/dsh-timeout` `deadline`): the
+ * caller's signal is fused with an identifiable budget rather than replaced, so
+ * a caller cancellation still aborts the count exactly as before, while a count
+ * that merely hangs is abandoned on its own budget and degrades through the
+ * catch below. `deadline` also stamps the abort reason with
+ * {@link COUNT_TIMEOUT_CODE}, which is what lets `timeoutOf` tell "Everything
+ * stopped answering" apart from "the caller walked away" in the warning below.
+ *
+ * The disposer is not optional: `deadline`'s timer is NOT `unref`'d (measured in
+ * 0.2.0-rc.2), so a count that finished early would otherwise hold the loop open
+ * for the rest of its budget.
  */
 async function countMatches(
   ctx: HostContext,
@@ -680,6 +707,7 @@ async function countMatches(
   stderrMaxBytes: number,
   countTimeoutMs: number,
 ): Promise<number | undefined> {
+  const budget = deadline(exec.signal, countTimeoutMs, COUNT_TIMEOUT_CODE)
   try {
     const run = await runEs(
       ctx,
@@ -689,13 +717,29 @@ async function countMatches(
       rawOutputMaxBytes,
       graceMs,
       stderrMaxBytes,
-      AbortSignal.any([exec.signal, AbortSignal.timeout(countTimeoutMs)]),
+      budget.signal,
     )
     if (run.noMatches) return 0
     const count = Number.parseInt(run.stdout.trim(), 10)
     return Number.isSafeInteger(count) && count >= 0 ? count : undefined
-  } catch {
+  } catch (error) {
+    // Losing the count is a degradation, not a failure: the listing is already
+    // in hand and is returned with a lower bound (see foundPhrase). It is also
+    // the only place a wedged Everything is visible from the host side, so say
+    // which way it went instead of swallowing it whole.
+    //
+    // `String(error)` and not `.message`: nothing guarantees the thrown value is
+    // an Error, and a diagnostic that throws on `null` would turn a degradation
+    // into the very failure this catch exists to prevent.
+    const detail = error instanceof Error ? error.message : String(error)
+    ctx.logger?.warn(
+      timeoutOf(budget.signal, COUNT_TIMEOUT_CODE) === undefined
+        ? `tool-everything: count pass returned no total (${detail}); reporting a lower bound`
+        : `tool-everything: count pass exceeded its ${countTimeoutMs}ms budget; reporting a lower bound`,
+    )
     return undefined
+  } finally {
+    budget[Symbol.dispose]()
   }
 }
 
@@ -1449,7 +1493,7 @@ const configSchema = z.object({
  * - Exporting the schema as-is (`const Config = configSchema`) is the form to
  *   try first. It compiles while this package and the host resolve the SAME
  *   schemastery copy (measured after pinning `~3.18.4`, the line every DSH
- *   0.1.7-rc.2 package declares), and it goes red the moment the two copies
+ *   0.2.0-rc.2 package declares), and it goes red the moment the two copies
  *   split (`TS2883: The inferred type of 'Config' cannot be named without a
  *   reference to 'Schema'`) — which is a signal to re-decide, not a bug.
  * - Annotating it directly fails either way: `Schema`'s `data` parameter is

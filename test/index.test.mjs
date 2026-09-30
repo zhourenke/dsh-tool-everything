@@ -24,6 +24,7 @@ function createHarness(options = {}) {
   const spawnCalls = []
   const tools = []
   const sections = []
+  const warnings = []
   const orders = options.orders ?? HOST_SECTION_ORDERS
   const respond =
     options.respond ??
@@ -54,8 +55,9 @@ function createHarness(options = {}) {
         return respond(spec)
       },
     },
+    logger: { warn: (message) => warnings.push(message) },
   }
-  return { ctx, tools, sections, spawnCalls }
+  return { ctx, tools, sections, spawnCalls, warnings }
 }
 
 /** Apply the plugin to a fresh harness and return the registered tool. */
@@ -108,17 +110,31 @@ function listingThenCount(listingStdout, countStdout) {
 function listingThenHangingCount(listingStdout) {
   return (spec) => {
     if (!spec.argv[2].includes('-get-result-count')) return succeedWith(listingStdout)()
-    return {
-      done: new Promise((resolve) => {
-        spec.signal.addEventListener('abort', () => resolve({ signal: 'SIGTERM', exitCode: null }), {
-          once: true,
-        })
-      }),
-      collected: {
-        stdout: { readFrom: () => ({ text: '', lossy: false }) },
-        stderr: { readFrom: () => ({ text: '', lossy: false }) },
-      },
-    }
+    return hangingUntilAborted(spec.signal)
+  }
+}
+
+/**
+ * The seam's side of a killed process: settle when the spec's signal aborts —
+ * and settle AT ONCE when it is already aborted, because `abort()` on an
+ * aborted signal fires no further event. A mock that only listens would deadlock
+ * on the cancel-during-spawn case, which the real seam handles by terminating
+ * the managed range it just created.
+ */
+function hangingUntilAborted(signal) {
+  return {
+    done: new Promise((resolve) => {
+      const settle = () => resolve({ signal: 'SIGTERM', exitCode: null })
+      if (signal.aborted) {
+        settle()
+        return
+      }
+      signal.addEventListener('abort', settle, { once: true })
+    }),
+    collected: {
+      stdout: { readFrom: () => ({ text: '', lossy: false }) },
+      stderr: { readFrom: () => ({ text: '', lossy: false }) },
+    },
   }
 }
 
@@ -728,6 +744,51 @@ test('a count that never answers is abandoned on its own budget, keeping the lis
   assert.equal(harness.spawnCalls[1].signal.aborted, true, "the count's own deadline fired")
 })
 
+// The two cases below pin the distinction the host's `timeoutOf` buys: a count
+// that ran out of THIS tool's budget is not the same event as one the caller
+// cancelled, and the diagnostics must not confuse them. Both run through
+// `@deepseek-ai/dsh-timeout`'s `deadline`, whose timer is not `unref`'d — so a
+// missed disposer would leave an armed timer behind, which the second case
+// checks directly.
+test('a count that exhausts its budget is reported as this tool\'s own budget', async () => {
+  const listed = Array.from({ length: 2 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
+  const harness = createHarness({ respond: listingThenHangingCount(JSON.stringify(listed)) })
+  const tool = await loadTool(harness, { countTimeoutMs: 60 })
+
+  await tool.execute({ query: '*.pdf', max_results: 2 }, execContext())
+
+  assert.equal(harness.warnings.length, 1, 'a degraded count is reported once')
+  assert.match(harness.warnings[0], /exceeded its 60ms budget/)
+})
+
+test('a count the caller cancelled is not blamed on this tool\'s budget, and leaves no timer', async () => {
+  const listed = Array.from({ length: 2 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
+  const caller = new AbortController()
+  const harness = createHarness({
+    respond: (spec) => {
+      if (!spec.argv[2].includes('-get-result-count')) return succeedWith(JSON.stringify(listed))()
+      // The caller walks away while the count is still in flight, so the signal
+      // that ends it is the caller's — not the 60s budget armed below.
+      caller.abort()
+      return hangingUntilAborted(spec.signal)
+    },
+  })
+  const tool = await loadTool(harness, { countTimeoutMs: 60000 })
+  const timersBefore = process.getActiveResourcesInfo().filter((t) => t === 'Timeout').length
+
+  const result = await tool.execute({ query: '*.pdf', max_results: 2 }, { signal: caller.signal })
+
+  assert.equal(result.truncated, true, 'a cancelled count still degrades instead of failing the call')
+  assert.equal(harness.warnings.length, 1)
+  assert.match(harness.warnings[0], /returned no total/)
+  assert.doesNotMatch(harness.warnings[0], /exceeded its/, 'the budget never fired, so it must not be named')
+  const timersAfter = process.getActiveResourcesInfo().filter((t) => t === 'Timeout').length
+  assert.ok(
+    timersAfter <= timersBefore,
+    `the count budget must dispose its ${60000}ms timer; armed ${timersBefore} -> ${timersAfter}`,
+  )
+})
+
 test('a listing that exactly equals the limit is not called truncated', async () => {
   const listed = Array.from({ length: 2 }, (_, i) => ({ filename: `C:\\f${i}.pdf` }))
   const harness = createHarness({
@@ -969,7 +1030,7 @@ test('presentResult yields a paths search view, and falls back on error', async 
 })
 
 // ---------------------------------------------------------------------------
-// 0.1.7-rc.2 integration: concurrency classification and bounded projections
+// 0.2.0-rc.2 integration: concurrency classification and bounded projections
 // ---------------------------------------------------------------------------
 
 test('the tool declares itself safe to run in a parallel group', async () => {

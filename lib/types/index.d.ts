@@ -34,6 +34,14 @@ interface HostContext {
     subprocess: {
         spawn(spec: SubprocessSpawnSpec): SubprocessHandle;
     };
+    /**
+     * Ambient host logger. Optional because nothing in this plugin's contract
+     * requires it: the one warning it carries (a count pass that yielded no total)
+     * is diagnostics, so a host without it must still run the tool.
+     */
+    logger?: {
+        warn(message: string): unknown;
+    };
 }
 /** Cordis plugin name used by loader diagnostics. */
 declare const name = "tool-everything";
@@ -48,7 +56,7 @@ declare const inject: string[];
  * - Exporting the schema as-is (`const Config = configSchema`) is the form to
  *   try first. It compiles while this package and the host resolve the SAME
  *   schemastery copy (measured after pinning `~3.18.4`, the line every DSH
- *   0.1.7-rc.2 package declares), and it goes red the moment the two copies
+ *   0.2.0-rc.2 package declares), and it goes red the moment the two copies
  *   split (`TS2883: The inferred type of 'Config' cannot be named without a
  *   reference to 'Schema'`) — which is a signal to re-decide, not a bug.
  * - Annotating it directly fails either way: `Schema`'s `data` parameter is
