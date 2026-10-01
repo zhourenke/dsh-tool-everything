@@ -414,6 +414,9 @@ test('sort_by is narrowed to the fields es sorts by before it reaches cmd', asyn
   await tool.execute({ query: '*.pdf', sort_by: 'Date-Modified' }, execContext())
   assert.match(commandLine(harness), /-sort date-modified-ascending/)
 
+  await tool.execute({ query: '*.pdf', sort_by: 'size', sort_desc: true }, execContext())
+  assert.match(commandLine(harness, 1), /-sort size-descending/, 'sort_desc must flip the direction es is given')
+
   // Measured through this tool: the free-form value used to reach the command
   // string verbatim, so `name & echo X` made cmd run two commands.
   const hostile = createHarness()
@@ -1378,4 +1381,166 @@ test('the icon and locale files are declared, reachable, and inside the package'
   for (const entry of ['icon.svg', 'locale/*.json']) {
     assert.ok(packageManifest.files.includes(entry), `files must include ${entry}`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Parameters and error classification, one case per remaining executable arm —
+// mostly the "did the value survive the trip into the command line" question,
+// which a mocked seam can only answer by inspecting the command itself.
+// ---------------------------------------------------------------------------
+
+test('every metadata column can be requested at once and renders', async () => {
+  // es reports the date columns as Windows FILETIME numbers, not as text — a
+  // string fixture is silently dropped by the converter (which is itself the
+  // behaviour worth pinning: a raw 133… number must never reach the model).
+  const filetime = (Date.UTC(2026, 0, 1, 12, 0, 0) + 11_644_473_600_000) * 10_000
+  const entry = {
+    filename: 'C:\\a\\tiny.txt',
+    size: 512,
+    extension: 'txt',
+    attributes: 0,
+    date_created: filetime,
+    date_modified: filetime + 86_400_000 * 10_000,
+    date_accessed: filetime + 172_800_000 * 10_000,
+  }
+  const harness = createHarness({ respond: succeedWith(JSON.stringify([entry])) })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute(
+    {
+      query: '*.txt',
+      include_path: true,
+      include_size: true,
+      include_date_created: true,
+      include_date_modified: true,
+      include_date_accessed: true,
+      include_attributes: true,
+    },
+    execContext(),
+  )
+
+  const cmd = commandLine(harness)
+  for (const flag of ['-full-path-and-name', '-size', '-dc', '-dm', '-da', '-attribs']) {
+    assert.ok(cmd.includes(flag), `expected ${flag} in: ${cmd}`)
+  }
+
+  // Zero attribute bits mean "no flags set", which renders as the marker, not as
+  // an empty field — an empty string would read as "es said nothing".
+  assert.equal(result.results[0].attributes, '-')
+  assert.equal(result.results[0].size, 512)
+
+  const text = tool.output.render({}, result)[0].text
+  assert.match(text, /512 B/, 'a sub-kilobyte size must not be rounded to 0 KB')
+  assert.match(text, /ext: txt/)
+  // The exact clock time depends on the host's timezone, so assert the shape and
+  // the date rather than a whole timestamp; what matters is that it was rendered
+  // as a readable date and not as the raw FILETIME integer.
+  assert.match(text, /created: 2026-01-0[12] \d{2}:\d{2}:\d{2}/)
+  assert.match(text, /accessed: 2026-01-0[23] \d{2}:\d{2}:\d{2}/)
+  assert.doesNotMatch(text, new RegExp(String(filetime)))
+})
+
+test('file_only and folder_only narrow the listing inside es itself', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '*.txt', file_only: true }, execContext())
+  assert.match(commandLine(harness), /\/a-d/, 'file_only must exclude directories in es, not after the fact')
+
+  await tool.execute({ query: '*.txt', folder_only: true }, execContext())
+  assert.match(commandLine(harness, 1), /\/ad/, 'folder_only must ask es for directories only')
+})
+
+test('the search-mode switches stay ahead of the query', async () => {
+  // es is greedy about these: anything after them is swallowed into the search
+  // text, so their position is part of their meaning, not cosmetics.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute(
+    { query: 'needle', match_case: true, match_whole_word: true, match_path: true },
+    execContext(),
+  )
+
+  const cmd = commandLine(harness)
+  for (const flag of ['-i', '-w', '-p']) {
+    assert.ok(cmd.includes(flag), `expected ${flag} in: ${cmd}`)
+  }
+  assert.doesNotMatch(cmd.slice(cmd.indexOf('needle')), /-[iwp]/, 'no search switch may follow the query')
+})
+
+test('a count that contradicts the listing degrades instead of erasing it', async () => {
+  const rows = JSON.stringify([{ filename: 'C:\\a\\one.txt' }, { filename: 'C:\\b\\two.txt' }])
+  // The listing filled its limit, so a count is requested; it comes back empty,
+  // i.e. "no matches" — which cannot be true, because two rows are right here.
+  const harness = createHarness({ respond: listingThenCount(rows, '') })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: '*.txt', max_results: 2 }, execContext())
+
+  assert.equal(result.results.length, 2)
+  assert.equal(result.total, 2, 'rows in hand must outrank a count that says zero')
+  assert.equal(result.truncated, true)
+  assert.match(tool.output.render({}, result)[0].text, /at least 2/)
+})
+
+test('a seam that throws a non-Error still yields a readable message', async () => {
+  const harness = createHarness({
+    respond: () => {
+      // Not an Error instance: reading `.message` off it, or letting a property
+      // access throw inside the catch, would lose the only diagnostic there is.
+      throw 'plain string failure'
+    },
+  })
+  const tool = await loadTool(harness)
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.md' }, execContext()),
+    (error) => {
+      assert.match(error.message, /could not start the es command: plain string failure/)
+      return true
+    },
+  )
+})
+
+test('a failed search carries the stderr excerpt, and says when it was cut', async () => {
+  const failing = (stderrText, lossy) => () => ({
+    done: Promise.resolve({ signal: null, exitCode: 1 }),
+    collected: {
+      stdout: { readFrom: () => ({ text: '', lossy: false }) },
+      stderr: { readFrom: () => ({ text: stderrText, lossy }) },
+    },
+  })
+
+  const plain = createHarness({ respond: failing('everything: bad query', false) })
+  await assert.rejects(
+    () => loadTool(plain).then((tool) => tool.execute({ query: '*.md' }, execContext())),
+    (error) => {
+      assert.equal(error.code, 'ES_FAILED')
+      assert.match(error.message, /everything: bad query/)
+      return true
+    },
+  )
+
+  const cut = createHarness({ respond: failing('x'.repeat(200), true) })
+  await assert.rejects(
+    () => loadTool(cut).then((tool) => tool.execute({ query: '*.md' }, execContext())),
+    (error) => {
+      assert.match(error.message, /\[stderr truncated\]/)
+      return true
+    },
+  )
+})
+
+test('apply tolerates a config object that never went through the schema', async () => {
+  // The defaults are declared in the schema, and the fallbacks inside `apply`
+  // duplicate them on purpose: `apply` is exported and callable with a bare
+  // object, and the tool must still get a usable timeout rather than NaN.
+  const harness = createHarness()
+  const mod = await import('../lib/index.js')
+
+  await mod.apply(harness.ctx, {})
+
+  assert.equal(harness.tools.length, 1)
+  assert.equal(harness.tools[0].timeoutMs, 1_200_000, 'the default timeout must survive a bare config')
 })

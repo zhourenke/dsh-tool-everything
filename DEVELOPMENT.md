@@ -9,7 +9,7 @@
 |---|---|
 | `src/index.ts` | 唯一源码：Cordis 插件，导出 `{ apply, Config, inject, name }` |
 | `lib/index.js` + `lib/types/` | 构建产物（`tsc` 输出），**随源码一起提交**（路线 A，git 分发） |
-| `test/index.test.mjs` | `node --test` 测试（当前 72 项，`lib/index.js` 行覆盖 100%） |
+| `test/index.test.mjs` | `node --test` 测试（当前 79 项，`lib/index.js` 行覆盖 100%） |
 | `cordis.patch.yml` | `dsh.bundle.patch` 指向的 profile 层 patch |
 | `icon.svg` + `locale/{en,zh}.json` | 插件列表的显示元数据：宿主**不激活插件**就能读到名称、说明与图标（见「实现要点」第 8 节） |
 | `package.json` | `main`/`exports["."]` 指向 `lib/index.js`；`dsh.bundle` 声明 patch 文件 |
@@ -165,7 +165,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **注入类缺陷只能靠断言命令串本身**：mock seam 不经过真实 cmd，`sort_by`/`attributes` 里裸露的 `&` 在 mock 下"测试全绿"。所以回归测试断言的是构造出来的命令行（合法值被白名单收窄成 `-sort date-modified-ascending`、`/aR-H`，非法值在 spawn 之前就抛错），以及"被拒绝的调用不得 spawn"。
 - 通用断言：遍历每条结果，**任何字段值不得为 null**。
 - 判断插件有没有被 DSH 加载，用会话记录的最新一轮 `request/header` 工具表，别问模型"你看到新提示词了吗"（模型侧策略会拒绝逐字复述，且观感可能滞后于下发内容）。
-- 当前 72 项全部通过。
+- 当前 79 项全部通过。
 - **找冗余逻辑和死代码要靠覆盖率，不要靠肉眼**：`node --test --experimental-test-coverage --test-reporter=lcov` 给出 `lib/index.js` 每一行的执行次数，未执行的行就是"要么是死代码、要么是没有测试的可达路径"，两类必须分开处理（见下）。
 - **错误分支要有专门的用例**：这类代码不写用例就永远测不到，而它恰恰是模型唯一能看到的"出事时的说法"。现在每个 `EverythingError` 分支各有一条用例（非数组 JSON、非 ENOENT 的启动失败、`done` 被拒、没有 collected 流、被信号杀死、取消先于 ENOENT、预算 vs 取消），`--test-coverage` 对 `lib/index.js` 报 **100% 行覆盖**（250/250）。
 
@@ -181,12 +181,13 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **`applyEverythingTool` → `apply` 的包装层**：原来是 `apply` 调用 `applyEverythingTool`，纯转发，合并成一个函数（loader 只认 `apply`）。
 - **两个重复的 `warning` 展开表达式**：两处 return 用同一段条件展开，抽成 `restrictedWarningField(input)`；同时把 `_contentSearchRestricted` 布尔量删掉——`_contentSearchRestrictedPath` 的值本身就是那个标志（路径为空时才可能歧义，而 `isBroadPath` 只对非空路径成立）。
 
-**保留的（可达，只是缺用例）→ 补用例，不删代码**：`parseEsOutput` 的非数组拒绝、`formatAttributes` 的非数字透传、spawn 失败的四种形态、`collected` 缺失、信号后于进程结束。补完 12 条用例后行覆盖率到 100%。
+**保留的（可达，只是缺用例）→ 补用例，不删代码**：`parseEsOutput` 的非数组拒绝、`formatAttributes` 的非数字透传、spawn 失败的四种形态、`collected` 缺失、信号后于进程结束、各 `include_*` 列与 `file_only`/`folder_only`/`match_case`/`match_whole_word`/`match_path`/`sort_desc` 开关、非 Error 抛出、stderr 摘要被截断、以及 `apply` 收到未过 schema 的裸配置。补完后 **`lib/index.js` 行覆盖 100%（1258/1258）**，分支覆盖 91.4%——剩下没走到的分支全是"字段缺失/时间为空"这类不存在的输入形态（如 `filename` 缺失、`stdout.text` 缺失），不是没测到的功能。
 
-**顺手修掉的两个真问题**（都是清理时读出来的，不是风格问题）：
+**顺手修掉的三个真问题**（都是清理时读出来的，不是风格问题）：
 
 - **`spawn ENOENT` 的归因**：libuv 对**不存在的 cwd** 也报 `ENOENT`（指南故障表已收录），原代码一律回"es.exe 没装在 PATH 里"，会把"会话工作目录被删了"误导成"重装 Everything"。现在先 `existsSync(workdir)` 再决定文案与错误码（`ES_NOT_FOUND` / `ES_FAILED`），并且**这一步排在"信号已取消"判断之后**——取消优先于 ENOENT，否则模型会收到"去装 es.exe"这种与它自己超时无关的建议。
 - **`errorMessage()` 取代 `(error as Error).message ?? String(error)`**：后者对"抛出的不是 Error"这种情形错两次（非 Error 对象会静默走 `??` 兜底；抛 `null` 时属性访问本身抛 TypeError，**在被 catch 的路径里抛出**，正好把要报的失败换成一个无关的 TypeError）。seam 里四处失败边界统一用这一个函数。
+- **计数低于手上的行数时不能采信**（分支覆盖翻出来的）：`-get-result-count` 若返回空载荷（`''` / `[]`），`countMatches` 会按"没有匹配"返回 `0`，于是 `total = 0` 而 `results` 里明明有行——渲染出来就是**一边列文件、一边写"No files found"**，属于最坏的那种失败形态（自相矛盾的结论）。现在 `exact < results.length` 一律当作"计数不可信"：保留行数、置 `truncated`，按"至少 N 条"如实说。`totalIsExact` 的同一原则在这里又用了一次——**不报没有证过的总数**。
 
 ## 面向模型的文案（两处落点，互不同步）
 
