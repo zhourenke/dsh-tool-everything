@@ -138,10 +138,10 @@ function hangingUntilAborted(signal) {
   }
 }
 
-/** The `cmd /c` command string of the first spawn. */
-function commandLine(harness) {
-  assert.ok(harness.spawnCalls.length > 0, 'expected a spawn call')
-  const argv = harness.spawnCalls[0].argv
+/** The `cmd /c` command string of the first spawn (or of `index`, 0-based). */
+function commandLine(harness, index = 0) {
+  assert.ok(harness.spawnCalls.length > index, `expected at least ${index + 1} spawn call(s)`)
+  const argv = harness.spawnCalls[index].argv
   assert.equal(argv[0], 'cmd')
   assert.equal(argv[1], '/c')
   return argv[2]
@@ -242,6 +242,21 @@ test('a present-but-empty path is rejected before es is spawned', async () => {
     await assert.rejects(
       () => tool.execute({ query: '*playwright*', path: badPath }, execContext()),
       /path must be a non-empty string when given/,
+    )
+  }
+  assert.equal(harness.spawnCalls.length, 0, 'a rejected search must never spawn es')
+})
+
+test('an empty query is rejected before es is spawned', async () => {
+  // Only these two shapes reach the tool: the host's validator already rejects a
+  // missing or non-string query with its own message.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  for (const badQuery of ['', '   ']) {
+    await assert.rejects(
+      () => tool.execute({ query: badQuery }, execContext()),
+      /query must be a non-empty string/,
     )
   }
   assert.equal(harness.spawnCalls.length, 0, 'a rejected search must never spawn es')
@@ -876,6 +891,33 @@ test('a missing es binary is classified as ES_NOT_FOUND', async () => {
   )
 })
 
+test('a nonexistent working directory is named instead of blamed on PATH', async () => {
+  // libuv reports a missing cwd as ENOENT on the executable, so the PATH-shaped
+  // message would send the caller to reinstall Everything. Measured against the
+  // host's own fault table; the check below is what tells the two apart.
+  const harness = createHarness({
+    respond: () => {
+      throw new Error('spawn cmd ENOENT')
+    },
+  })
+  const tool = await loadTool(harness)
+  const missingCwd = 'C:\\definitely\\not\\a\\real\\directory'
+
+  await assert.rejects(
+    () =>
+      tool.execute(
+        { query: '*.pdf' },
+        { signal: new AbortController().signal, agent: { session: { header: { cwd: missingCwd } } } },
+      ),
+    (error) => {
+      assert.equal(error.code, 'ES_FAILED')
+      assert.match(error.message, /working directory .* does not exist/)
+      assert.doesNotMatch(error.message, /not found on PATH/)
+      return true
+    },
+  )
+})
+
 test('an already-aborted signal is classified as ES_ABORTED', async () => {
   const harness = createHarness()
   const tool = await loadTool(harness)
@@ -885,6 +927,192 @@ test('an already-aborted signal is classified as ES_ABORTED', async () => {
 
   await assert.rejects(
     () => tool.execute({ query: '*.pdf' }, { signal: controller.signal }),
+    (error) => error.code === 'ES_ABORTED',
+  )
+})
+
+test('max_results is truncated to an integer and clamped to the absolute cap', async () => {
+  // A finite non-integer passes the host's parameter validation, so it does reach
+  // es; `-n 2.7` is not a limit es accepts. Non-numbers never get this far (the
+  // host answers `"max_results" must be a finite JSON number`) — measured.
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '*.md', max_results: 2.7 }, execContext())
+  assert.match(commandLine(harness), /-n 2\b/, 'a fractional limit must not reach es')
+
+  await tool.execute({ query: '*.md', max_results: 1e9 }, execContext())
+  assert.match(commandLine(harness, 1), /-n 100000\b/, 'the absolute cap still applies')
+
+  await tool.execute({ query: '*.md', max_results: 0 }, execContext())
+  assert.match(commandLine(harness, 2), /-n 1\b/, 'a zero limit is raised to a usable one')
+})
+
+// ---------------------------------------------------------------------------
+// Failure classification: the seam's outcomes, each mapped to its own code.
+// These pin the vocabulary the model sees; a shared "it failed" would leave it
+// unable to tell a wrong query from a missing Everything from its own timeout.
+// ---------------------------------------------------------------------------
+
+/** A responder that runs to a given outcome without any stdout/stderr content. */
+function outcomeRespond(done, collected = {}) {
+  return () => ({
+    done,
+    collected: {
+      stdout: { readFrom: () => ({ text: '', lossy: false }) },
+      stderr: { readFrom: () => ({ text: '', lossy: false }) },
+      ...collected,
+    },
+  })
+}
+
+test('a non-array JSON payload is reported as an unexpected output format', async () => {
+  const harness = createHarness({ respond: succeedWith('{"error":"unexpected"}') })
+  const tool = await loadTool(harness)
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.md' }, execContext()),
+    (error) => {
+      assert.equal(error.code, 'ES_FAILED')
+      assert.match(error.message, /unexpected output format/)
+      return true
+    },
+  )
+})
+
+test('a spawn that fails for a non-ENOENT reason reports the underlying message', async () => {
+  const harness = createHarness({
+    respond: () => {
+      throw new Error('spawn EACCES: permission denied')
+    },
+  })
+  const tool = await loadTool(harness)
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.md' }, execContext()),
+    (error) => {
+      assert.equal(error.code, 'ES_FAILED', 'must not be misread as a missing binary')
+      assert.match(error.message, /could not start the es command: spawn EACCES/)
+      return true
+    },
+  )
+})
+
+test('a rejected process handle is classified as ES_FAILED', async () => {
+  const harness = createHarness({
+    respond: outcomeRespond(Promise.reject(new Error('handle blew up'))),
+  })
+  const tool = await loadTool(harness)
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.md' }, execContext()),
+    (error) => {
+      assert.equal(error.code, 'ES_FAILED')
+      assert.match(error.message, /could not start the es command: handle blew up/)
+      return true
+    },
+  )
+})
+
+test('a seam that hands back no collected streams is classified as ES_FAILED', async () => {
+  const harness = createHarness({ respond: () => ({ done: Promise.resolve({ signal: null, exitCode: 0 }) }) })
+  const tool = await loadTool(harness)
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.md' }, execContext()),
+    (error) => {
+      assert.equal(error.code, 'ES_FAILED')
+      assert.match(error.message, /no collected output streams/)
+      return true
+    },
+  )
+})
+
+test('a process killed without an aborted signal is classified as ES_FAILED', async () => {
+  const harness = createHarness({
+    respond: outcomeRespond(Promise.resolve({ signal: 'SIGTERM', exitCode: null })),
+  })
+  const tool = await loadTool(harness)
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.md' }, execContext()),
+    (error) => {
+      assert.equal(error.code, 'ES_FAILED', 'nobody cancelled this, so it is a failure, not ES_ABORTED')
+      assert.match(error.message, /killed by signal SIGTERM/)
+      return true
+    },
+  )
+})
+
+test('a spawn that fails while the call was cancelled reports the cancellation, not ENOENT', async () => {
+  // Ordering matters here for a real reason: the seam cannot report "cancelled"
+  // separately from "command missing", so a cancelled call whose spawn also threw
+  // ENOENT must still come back as ES_ABORTED — otherwise the model is told to
+  // reinstall Everything after its own timeout fired.
+  const controller = new AbortController()
+  const harness = createHarness({
+    respond: () => {
+      controller.abort()
+      throw new Error('spawn cmd ENOENT')
+    },
+  })
+  const tool = await loadTool(harness)
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.md' }, { signal: controller.signal }),
+    (error) => error.code === 'ES_ABORTED',
+  )
+})
+
+test('a warning is appended to a non-empty header rather than replacing it', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const blocks = tool.output.render({}, {
+    total: 2,
+    truncated: false,
+    query: 'content:hello',
+    results: [{ path: 'C:\\a.txt' }, { path: 'C:\\b.txt' }],
+    warning: 'restricted to immediate children',
+  })
+
+  assert.match(blocks[0].text, /^Found 2 results for "content:hello"/)
+  assert.match(blocks[0].text, /⚠️ restricted to immediate children/)
+})
+
+test('an attributes value es did not report as a number is passed through, not dropped', async () => {
+  // The measured contract is a numeric bitmask, so this branch only fires if es
+  // changes what it emits — a value is then still better than an empty field.
+  const harness = createHarness({
+    respond: succeedWith(JSON.stringify([{ filename: 'C:\\a.txt', attributes: 'RHA' }])),
+  })
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute({ query: '*.txt', include_attributes: true }, execContext())
+
+  assert.equal(result.results[0].attributes, 'RHA')
+})
+
+test('a signal aborted after the process finished is classified as ES_ABORTED', async () => {
+  const controller = new AbortController()
+  const harness = createHarness({
+    respond: () => {
+      // The process itself reports a clean exit; only the caller's signal says
+      // the call was cancelled, and that intent is what the caller needs back.
+      controller.abort()
+      return {
+        done: Promise.resolve({ signal: null, exitCode: 0 }),
+        collected: {
+          stdout: { readFrom: () => ({ text: '[]', lossy: false }) },
+          stderr: { readFrom: () => ({ text: '', lossy: false }) },
+        },
+      }
+    },
+  })
+  const tool = await loadTool(harness)
+
+  await assert.rejects(
+    () => tool.execute({ query: '*.md' }, { signal: controller.signal }),
     (error) => error.code === 'ES_ABORTED',
   )
 })

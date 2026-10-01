@@ -9,6 +9,8 @@
  * @module @zhourenke/dsh-tool-everything
  */
 
+import { existsSync } from 'node:fs'
+
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
@@ -111,6 +113,18 @@ function contentSearchRestrictedWarning(path: string | undefined): string {
   )
 }
 
+/**
+ * The `warning` field for a result, or an empty spread when nothing was
+ * narrowed. One helper rather than an expression repeated at both return sites
+ * in `execute`: a divergence between them would surface the warning on one path
+ * (no matches) and not the other (matches), for the same restriction.
+ */
+function restrictedWarningField(input: EverythingInput): { warning?: string } {
+  return input._contentSearchRestrictedPath === undefined
+    ? {}
+    : { warning: contentSearchRestrictedWarning(input._contentSearchRestrictedPath) }
+}
+
 // ---------------------------------------------------------------------------
 // System-prompt section placement
 // ---------------------------------------------------------------------------
@@ -165,6 +179,20 @@ class EverythingError extends HarnessError {
     super(message, code, options)
     this.code = code
   }
+}
+
+/**
+ * The message of whatever was thrown.
+ *
+ * `(error as Error).message ?? String(error)` is the tempting one-liner and it is
+ * wrong twice: for a non-Error object the `??` silently takes the fallback, and
+ * for a thrown `null` the property access itself throws — from inside a `catch`,
+ * so it replaces the failure being reported with a TypeError. Nothing in the
+ * seam's contract promises an Error instance, so this is the only correct read.
+ * Kept in one place because the read recurs at every failure boundary.
+ */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 // ---------------------------------------------------------------------------
@@ -287,11 +315,10 @@ function isBroadPath(path: string): boolean {
   if (/^[A-Za-z]:\\Users(\\[^\\]+)?$/i.test(n)) return true
   // Legacy profile container
   if (/^[A-Za-z]:\\Documents and Settings(\\[^\\]+)?$/i.test(n)) return true
-  // Current user home
-  const userHome =
-    typeof process !== 'undefined'
-      ? process.env.USERPROFILE || process.env.HOME
-      : undefined
+  // Current user home. No `typeof process !== 'undefined'` guard: this module
+  // only ever runs inside the host's Node process (it injects host services), so
+  // that branch was unreachable by construction.
+  const userHome = process.env.USERPROFILE || process.env.HOME
   if (userHome && n.toLowerCase() === userHome.toLowerCase()) return true
   return false
 }
@@ -401,9 +428,7 @@ interface EverythingInput {
   path?: string
   attributes?: string
   columns: string[]
-  /** @internal Set by buildEsCommand when content search was auto-restricted. */
-  _contentSearchRestricted?: boolean
-  /** @internal The scope that tripped isBroadPath, as the caller wrote it (warning text). */
+  /** @internal Set by buildEsCommand when a broad content search was narrowed; its value IS the flag. */
   _contentSearchRestrictedPath?: string
   /** @internal Set by buildEsCommand when content search requires an explicit path. */
   _contentSearchRejected?: boolean
@@ -415,10 +440,14 @@ function parseEverythingArgs(args: Record<string, unknown>): EverythingInput {
     throw new Error('query must be a non-empty string')
   }
 
-  const maxResults = Math.min(
-    Math.max(1, Number(args.max_results ?? DEFAULT_MAX_RESULTS)),
-    ABSOLUTE_MAX_RESULTS,
-  )
+  // No `Number.isFinite` guard here: the host's parameter validation runs in
+  // front of this function and rejects anything that is not a finite JSON number
+  // (measured: `max_results: 'lots'`, `NaN` and `null` all fail with
+  // `invalid arguments: "max_results" must be a finite JSON number`), so a
+  // non-finite value cannot arrive. A FRACTIONAL one still can, and `-n 2.7` is
+  // not something es takes, so the value is truncated.
+  const requested = Number(args.max_results ?? DEFAULT_MAX_RESULTS)
+  const maxResults = Math.min(Math.max(1, Math.trunc(requested)), ABSOLUTE_MAX_RESULTS)
 
   if (args.path !== undefined && String(args.path).trim().length === 0) {
     throw new Error('path must be a non-empty string when given')
@@ -628,7 +657,6 @@ function resolveQueryScope(
     if (isContentSearch(query) && isBroadPath(input.path)) {
       // -parent is non-recursive, matching the parent: function it replaces.
       scopeByOption('-parent', restrictToImmediateDir(input.path))
-      input._contentSearchRestricted = true
       input._contentSearchRestrictedPath = input.path
     } else {
       scopeByOption('-path', input.path)
@@ -648,7 +676,6 @@ function resolveQueryScope(
           /\bpath:(\S+?)(?:\s|$)/i,
           (_, p: string) => `parent:${restrictToImmediateDir(p)} `,
         )
-        input._contentSearchRestricted = true
         input._contentSearchRestrictedPath = inlinePath
       }
       // inline path present and not broad → pass through normally
@@ -747,16 +774,20 @@ async function countMatches(
 // Result parsing
 // ---------------------------------------------------------------------------
 
-/** One result entry from `es -json`. */
+/**
+ * One result entry from `es -json`, typed to the vocabulary es 1.1.x actually
+ * emits (measured): `filename` always, then one field per requested column, with
+ * `extension` null for a directory and `attributes` a NUMBER bitmask. There is
+ * no `path` field — `-full-path-and-name` puts the whole path in `filename`.
+ */
 interface EsResultEntry {
   filename?: string
-  path?: string
   size?: number | null
   date_created?: number | null
   date_modified?: number | null
   date_accessed?: number | null
-  extension?: string
-  attributes?: string
+  extension?: string | null
+  attributes?: number | null
 }
 
 /**
@@ -844,7 +875,7 @@ function parseEsOutput(stdout: string): EsResultEntry[] {
   } catch (error) {
     if (error instanceof EverythingError) throw error
     throw new EverythingError(
-      `es produced invalid JSON output: ${(error as Error).message}`,
+      `es produced invalid JSON output: ${errorMessage(error)}`,
       'ES_FAILED',
       { cause: error },
     )
@@ -902,22 +933,31 @@ async function runEs(
         'ES_ABORTED',
       )
     }
-    const message = (error as Error).message ?? String(error)
+    const message = errorMessage(error)
     if (
       message.includes('ENOENT') ||
       message.includes('not found') ||
       message.includes('cannot find')
     ) {
+      // libuv reports a nonexistent cwd as ENOENT on the executable, so this
+      // message cannot be taken at face value: measured, "spawn <cmd> ENOENT"
+      // appears even for an absolute path to a command that exists, when the cwd
+      // it was launched in does not (PLUGIN_RELEASE_GUIDE.md fault table). Check
+      // the directory before blaming PATH — otherwise a deleted session cwd
+      // tells the user to reinstall Everything.
+      const workdirExists = existsSync(workdir)
       throw new EverythingError(
-        `${toolName}: the "cmd" or "es" command was not found on PATH. Please ensure Everything (voidtools) and its CLI client (es.exe) are installed and accessible.`,
-        'ES_NOT_FOUND',
-        { cause: error as Error },
+        workdirExists
+          ? `${toolName}: the "cmd" or "es" command was not found on PATH. Please ensure Everything (voidtools) and its CLI client (es.exe) are installed and accessible.`
+          : `${toolName}: the working directory ${workdir} does not exist, so the command could not start — libuv reports this as a missing executable, which is not the real cause. Search cannot run without a valid session working directory.`,
+        workdirExists ? 'ES_NOT_FOUND' : 'ES_FAILED',
+        { cause: error },
       )
     }
     throw new EverythingError(
       `${toolName} could not start the es command: ${message}`,
       'ES_FAILED',
-      { cause: error as Error },
+      { cause: error },
     )
   }
 
@@ -926,14 +966,17 @@ async function runEs(
     outcome = await handle.done
   } catch (error) {
     throw new EverythingError(
-      `${toolName} could not start the es command: ${(error as Error).message}`,
+      `${toolName} could not start the es command: ${errorMessage(error)}`,
       'ES_FAILED',
-      { cause: error as Error },
+      { cause: error },
     )
   }
 
-  const stdout = handle.collected.stdout?.readFrom(0)
-  const stderr = handle.collected.stderr?.readFrom(0)
+  // `collected` is optional in the access chain as well as its members: a seam
+  // that hands back no collector at all must land in the same classified failure
+  // below, not throw a raw TypeError out of the tool call.
+  const stdout = handle.collected?.stdout?.readFrom(0)
+  const stderr = handle.collected?.stderr?.readFrom(0)
 
   if (stdout === undefined || stderr === undefined) {
     throw new EverythingError(
@@ -942,6 +985,11 @@ async function runEs(
     )
   }
 
+  // Checked BEFORE the "killed by signal" test below, not instead of it: a
+  // caller cancellation satisfies both, and the caller needs to hear ES_ABORTED
+  // ("you cancelled this") rather than the symptom ES_FAILED ("SIGTERM") — the
+  // seam reports the two outcomes identically, so the intent has to be read from
+  // the signal it was handed.
   if (signal.aborted) {
     throw new EverythingError(
       `${toolName} was aborted before completion (tool timeout or caller cancellation)`,
@@ -1111,7 +1159,13 @@ function everythingSearchPresentResult(
 // Tool definition
 // ---------------------------------------------------------------------------
 
-function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
+/**
+ * Register the `everything_search` tool and its system-prompt guidance.
+ *
+ * This is the cordis `apply` itself (exported at the bottom) rather than a
+ * wrapper around one: the loader hands the context to this single entry point.
+ */
+function apply(ctx: HostContext, config: EverythingConfig): void {
   const timeoutMs = Number(config.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   const countTimeoutMs = Number(config.countTimeoutMs ?? DEFAULT_COUNT_TIMEOUT_MS)
   const graceMs = Number(config.graceMs ?? DEFAULT_GRACE_MS)
@@ -1302,25 +1356,24 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
       // so a renamed or retyped output field fails `tsc` here instead of
       // silently printing nothing (a local annotation would keep compiling).
       render: (_args, value) => {
-        if (value.total === 0 && !value.warning) {
-          return [{ type: 'text' as const, text: 'No files found' }]
+        // `total` is never below the row count, so zero means both are zero and
+        // there is nothing to enumerate — the warning, if any, is the whole
+        // answer (it is what explains an empty listing from a narrowed search).
+        if (value.total === 0) {
+          return [
+            { type: 'text' as const, text: value.warning ? `⚠️ ${value.warning}` : 'No files found' },
+          ]
         }
-        let header = ''
-        if (value.total > 0) {
-          // An unreadable count leaves `total` at the number of rows, so say
-          // "at least" instead of stating a number the count never proved.
-          const exact = totalIsExact(value.total, value.truncated, value.results.length)
-          header =
-            foundPhrase(value.total, value.query, exact) +
-            (value.truncated
-              ? ` (showing first ${value.results.length}${exact ? '' : '; the exact total is unavailable'})`
-              : '')
-        }
+        // An unreadable count leaves `total` at the number of rows, so say
+        // "at least" instead of stating a number the count never proved.
+        const exact = totalIsExact(value.total, value.truncated, value.results.length)
+        let header =
+          foundPhrase(value.total, value.query, exact) +
+          (value.truncated
+            ? ` (showing first ${value.results.length}${exact ? '' : '; the exact total is unavailable'})`
+            : '')
         if (value.warning) {
           header = `${header}\n\n⚠️ ${value.warning}`
-        }
-        if (value.total === 0) {
-          return [{ type: 'text' as const, text: header || 'No files found' }]
         }
         const lines = value.results.map((r, i) => {
           const filepath = String(r.path ?? '(unknown)')
@@ -1389,9 +1442,7 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
           truncated: false,
           query: input.query,
           results: [],
-          ...(input._contentSearchRestricted
-            ? { warning: contentSearchRestrictedWarning(input._contentSearchRestrictedPath) }
-            : {}),
+          ...restrictedWarningField(input),
         }
       }
 
@@ -1403,7 +1454,10 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
         const dateCreated = formatFiletime(entry.date_created)
         const dateAccessed = formatFiletime(entry.date_accessed)
         return {
-          path: entry.filename ?? entry.path ?? '(unknown)',
+          // `filename` is the only path field es emits (measured: with
+          // -full-path-and-name the whole path arrives there, and there is no
+          // `path` key to fall back to).
+          path: entry.filename ?? '(unknown)',
           ...(entry.size !== null && entry.size !== undefined ? { size: entry.size } : {}),
           ...(dateModified !== undefined ? { date_modified: dateModified } : {}),
           ...(dateCreated !== undefined ? { date_created: dateCreated } : {}),
@@ -1454,9 +1508,7 @@ function applyEverythingTool(ctx: HostContext, config: EverythingConfig): void {
         truncated,
         query: input.query,
         results,
-        ...(input._contentSearchRestricted
-          ? { warning: contentSearchRestrictedWarning(input._contentSearchRestrictedPath) }
-          : {}),
+        ...restrictedWarningField(input),
       }
     },
   })
@@ -1510,13 +1562,6 @@ const configSchema = z.object({
  * @see PLUGIN_RELEASE_GUIDE.md 「类型定义原则」
  */
 const Config = configSchema as unknown as ReturnType<typeof z.any>
-
-/**
- * Register the `everything_search` tool.
- */
-function apply(ctx: HostContext, config: EverythingConfig): void {
-  applyEverythingTool(ctx, config)
-}
 
 // Only the cordis contract is exported: the host loads `apply`, `Config`,
 // `inject` and `name`, and the constants below stay private to the bundle.

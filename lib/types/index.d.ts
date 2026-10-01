@@ -43,6 +43,13 @@ interface HostContext {
         warn(message: string): unknown;
     };
 }
+/**
+ * Register the `everything_search` tool and its system-prompt guidance.
+ *
+ * This is the cordis `apply` itself (exported at the bottom) rather than a
+ * wrapper around one: the loader hands the context to this single entry point.
+ */
+declare function apply(ctx: HostContext, config: EverythingConfig): void;
 /** Cordis plugin name used by loader diagnostics. */
 declare const name = "tool-everything";
 /** Services required by the tool. */
@@ -73,8 +80,4 @@ declare const inject: string[];
  * @see PLUGIN_RELEASE_GUIDE.md 「类型定义原则」
  */
 declare const Config: ReturnType<typeof z.any>;
-/**
- * Register the `everything_search` tool.
- */
-declare function apply(ctx: HostContext, config: EverythingConfig): void;
 export { apply, Config, inject, name };
