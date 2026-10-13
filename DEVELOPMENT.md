@@ -26,6 +26,7 @@ pnpm test             # pnpm run build && node --test
 - **产物必须与源码同步提交**：只改 `src/` 而不提交 `lib/`，git 安装会跑到旧代码。测试失败先确认是不是 build 步骤挂了（`pnpm test` 内部先 build）。
 - **不要加 `prepare` 脚本**：路线 A 要求安装命令不触发构建，`lib/` 已在仓库里。
 - `node --test` 用裸形式；给 `test` 目录参数会 MODULE_NOT_FOUND，给 glob 会静默 0 测试。
+- **本机 shell 基线是 pwsh 7.6.6（`Core`）**，5.1 已不是默认（`powershell.exe` 5.1 仍在 `PATH` 上）。上面这些命令都不用版本专有语法，所以换版不影响它们；但**写一次性脚本前先 `$PSVersionTable` 自证**，别照抄"5.1 时代"的绕法（`-Encoding Byte` 在 7.x 会直接报错，`-AsByteStream` 才对）。两栏复核见工作区文档 `PLUGIN_RELEASE_GUIDE.md`「本环境的 PowerShell 版本基线」。
 
 ## 开发挂载：让 DSH 加载你改的代码
 
@@ -48,6 +49,8 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\web\node_modul
 ### 1. 为什么用 `cmd /c chcp 65001>nul & es -json ...`
 
 中文 Windows（及其他 CJK 区域）上 es 按系统 ANSI 代码页（GB2312/CP936）输出文件名，而 DSH 子进程按 UTF-8 解码 stdout——非 ASCII 路径全会乱码。先 `chcp 65001` 再跑 es，es 输出 UTF-8 字节即可正确解码。端到端实测：不加时 `D:\驱动镜像` 变成 `D:\`。
+
+**这条护栏与 PowerShell 版本无关，别因为"新 shell 已经处理 UTF-8 了"就删掉它。** 决定 `es.exe` 输出编码的是**控制台代码页**，而它是从宿主控制台**继承**来的、不由本插件决定。本机实测：系统 ANSI 代码页（ACP）是 **936**，而当前会话所在的控制台恰好是 **65001**（`cmd /c chcp` → `Active code page: 65001`）。也就是说同一份代码若由从 `cmd.exe`（936）启动的 DSH 执行，不加 `chcp` 就会乱码——而 DSH 由谁启动不归插件管，所以这行必须留着。工作区级的两栏版本复核见 `PLUGIN_RELEASE_GUIDE.md`「本环境的 PowerShell 版本基线」。
 
 ### 2. 查询转义：caret、绝不用引号、path 走环境变量
 
