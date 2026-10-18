@@ -9,7 +9,7 @@
 |---|---|
 | `src/index.ts` | 唯一源码：Cordis 插件，导出 `{ apply, Config, inject, name }` |
 | `lib/index.js` + `lib/types/` | 构建产物（`tsc` 输出），**随源码一起提交**（路线 A，git 分发） |
-| `test/index.test.mjs` | `node --test` 测试（当前 79 项，`lib/index.js` 行覆盖 100%） |
+| `test/index.test.mjs` | `node --test` 测试（当前 80 项，`lib/index.js` 行覆盖 100%） |
 | `cordis.patch.yml` | `dsh.bundle.patch` 指向的 profile 层 patch |
 | `icon.svg` + `locale/{en,zh}.json` | 插件列表的显示元数据：宿主**不激活插件**就能读到名称、说明与图标（见「实现要点」第 8 节） |
 | `package.json` | `main`/`exports["."]` 指向 `lib/index.js`；`dsh.bundle` 声明 patch 文件 |
@@ -216,18 +216,18 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 | `@deepseek-ai/dsh-system-prompt` | 系统提示词段落注册 |
 | `@deepseek-ai/dsh-timeout` | 计数的独立预算（`deadline`/`timeoutOf`），见「实现要点」第 7 节 |
 
-已测试版本：**DSH v0.2.0-rc.2**（2026-09）。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
+已测试版本：**DSH v0.2.0-rc.2**（2026-09）与 **v0.2.1-rc.2**（2026-10），双轨支持。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
 
 `schemastery` 是唯一进 `dependencies` 的包（代码真正 import 它），范围写 **`~3.18.4`**：宿主的每一个包都声明 `~3.18.4`，宿主实体也是 3.18.4，所以插件解析到的是**同一个 `.pnpm/@deepseek-ai+schemastery@3.18.4`**。此前写 `^3.18.2` 时 lock 把本包钉在 3.18.2，同一进程里存在两份 schemastery——它不报错（`Config` 只被 cordis 当鸭子类型调用），但类型图会因此分叉，`TS2883` 就是那份分叉的产物。**升级 DSH 时把这条范围一起复核**（宿主换到新的 schemastery 行时必须同步跟）。
 
-## 与宿主版本的绑定点（0.2.0-rc.2）
+## 与宿主版本的绑定点（双基线：0.2.0-rc.2 与 0.2.1-rc.2）
 
 `devDependencies` 里那几个宿主包**钉死版本号而非范围**：它们决定 `tsc` 拿哪一版类型校验。**连接点挂载时运行时用的是宿主那一份**，所以不钉死就会出现"类型按旧版通过、运行按新版行为"的错位——本插件曾长期拿 0.1.5-rc.1 的类型编译。
 
 | 绑定点 | 内容 | 为何必须 |
 |---|---|---|
-| `peerDependencies` | 五个宿主包 `^0.2.0-rc.2`，`cordis` 走自己的版本线 `^4.0.4` | 预发布版本只被「同一 major.minor.patch 且带预发布」的范围放行，`^0.1.7-rc.2` 匹配不到 0.2.0-rc.2；`cordis` 不参与宿主准入闸门（判定只看 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*`），工作区各插件一致写 `^4.0.4` |
-| `devDependencies` | 同一组版本号，精确 | 让 `tsc` 按新宿主校验；否则类型检查是假绿 |
+| `peerDependencies` | 宿主包写双轨范围 `^0.2.0-rc.2 \|\| ^0.2.1-rc.2`，`cordis` 走自己的版本线 `^4.0.4` | 预发布版本只被「同一 major.minor.patch 且带预发布」的比较器放行，`^0.2.0-rc.2` 匹配不到 `0.2.1-rc.2`；必须按预发布代显式用 `\|\|` 扩展窗口。测试 `index.test.mjs` 断言所有宿主 peer 范围一致且与 README 兼容行一一对应 |
+| `devDependencies` | 当前基线版本号，精确 | 让 `tsc` 按基线宿主校验；next 版本的类型与端到端在 `_next-compat/` 隔离环境中复核 |
 | 导入的宿主类型 | `SubprocessSpawnSpec`/`SubprocessHandle`/`SubprocessOutcome`、`PromptSection`、`ToolRunContext`/`ToolCallView`/`ToolResultView` | 本地结构接口**不会**因宿主漂移而报错（指南「类型定义原则」）；改用宿主类型后 `exec.agent.session.header.cwd` 这类访问点全部受检 |
 | `Config` 的标注 | `configSchema as unknown as ReturnType<typeof z.any>` | 三种写法实测：原样导出在**两份 schemastery 同版本**时能过、分叉时报 `TS2883`（"cannot be named without a reference to 'Schema'"）；直接标注两边都报 `TS2322`（`Schema` 的 `data` 参数逆变，与副本数量无关）；断言恒过但放弃检查。宿主换 schemastery 行会让两份实体重新分叉，断言让那时只多一个可移植声明、而不是构建直接红 |
 
@@ -258,7 +258,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 工作区级文档 `PLUGIN_RELEASE_GUIDE.md`（位于仓库外的 `DSH_Workspace/CreatePlugin/`，**不随 git 分发**）收录了更完整的开发、发布与排错经验：构建提交纪律、连接点安装的连带后果、模型文案的落点与取证、`tsc` 拼接缝等。开发时对照查阅。
 
-**版本号怎么算、什么时候改，也以它为准**（「插件版本号」一节）：号写成「宿主版本收掉预发布里的点 + `.<n>`」（`0.2.0-rc.2` → `0.2.0-rc2.1`，即面向该宿主的第 1 个版本），而**改号只在用户要求时发生**——用户会在推送前提出，没提就不要动 `package.json` 的 `version`，也不要追问"要不要升号／要不要推送"。
+**版本号怎么算、什么时候改，也以它为准**（「插件版本号」一节）：号写成「支持窗口下界的宿主版本收掉预发布里的点 + `.<n>`」（双轨支持下仍为 `0.2.0-rc2.1`，窗口上界由 `peerDependencies` 与 README 表达；下次 tuple 迁移至 `0.2.1` 时采用保留点的 `rc.2.N` 形状，如 `0.2.1-rc.2.1`），而**改号只在用户要求时发生**——用户会在推送前提出，没提就不要动 `package.json` 的 `version`，也不要追问"要不要升号／要不要推送"。
 
 ## 许可证
 
