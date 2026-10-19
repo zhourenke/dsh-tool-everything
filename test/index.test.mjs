@@ -334,6 +334,64 @@ test('an inline path: in the query is guarded as well', async () => {
   )
 })
 
+test('an inline path: placed after content: is hoisted to the front and guarded', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute(
+    { query: 'content:router_ed25519 path:C:\\Users\\ParkGarden' },
+    execContext(),
+  )
+  assert.match(commandLine(harness), /parent:C:\\Users\\ParkGarden\^ content:router_ed25519/)
+  assert.equal(typeof result.warning, 'string')
+  assert.ok(result.warning.includes('the path "C:\\Users\\ParkGarden"'))
+})
+
+test('an inline narrow path: placed after content: is hoisted to the front without warning', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute(
+    { query: 'content:hello path:C:\\Specific\\Folder' },
+    execContext(),
+  )
+  assert.match(commandLine(harness), /path:C:\\Specific\\Folder\^ content:hello/)
+  assert.equal(result.warning, undefined)
+})
+
+test('an inline parent: scope in a content: search is hoisted to the front', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute(
+    { query: 'content:hello parent:C:\\Specific\\Folder' },
+    execContext(),
+  )
+  assert.match(commandLine(harness), /parent:C:\\Specific\\Folder\^ content:hello/)
+  assert.equal(result.warning, undefined)
+})
+
+test('an inline broad parent: scope in a content: search carries a restriction warning', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  const result = await tool.execute(
+    { query: 'content:hello parent:C:\\Users' },
+    execContext(),
+  )
+  assert.match(commandLine(harness), /parent:C:\\Users\^ content:hello/)
+  assert.equal(typeof result.warning, 'string')
+  assert.ok(result.warning.includes('the path "C:\\Users"'))
+})
+
+test('an inline path: in a non-content search is preserved without hoisting', async () => {
+  const harness = createHarness()
+  const tool = await loadTool(harness)
+
+  await tool.execute({ query: '*.ts path:C:\\proj' }, execContext())
+  assert.match(commandLine(harness), /\*\.ts\^ path:C:\\proj/)
+})
+
 test('the restriction warning states the four scopes actually treated as too broad', async () => {
   // "a drive root or the Users tree" over-stated the guard: a workspace living
   // at C:\Users\<user>\<project> is not restricted at all, and a caller reading
