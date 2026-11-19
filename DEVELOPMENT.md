@@ -113,7 +113,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 这条降级路径只有在计数查询**不跟主查询共用那 20 分钟预算**时才有意义。原先两者共用 `timeoutMs`，于是一次卡住的 `es` 会把整个调用的预算吃光：宿主在 `1200000 ms` 处终止调用，**连已经取到的列表一起丢掉**（2026-09-28 实测，见「经验沉淀」）。现在计数查询跑在**宿主自己的超时算术**上（`@deepseek-ai/dsh-timeout` 的 `deadline(exec.signal, countTimeoutMs, COUNT_TIMEOUT_CODE)`）：它把"调用方取消"与"计数自己的短预算"融进同一个信号（默认 5 秒，配置项 `countTimeoutMs`），并用 `timeoutOf(signal, code)` 让降级处能分辨是哪一边先开枪——预算先到记 `count pass exceeded its Nms budget`，取消先到记 `count pass returned no total (...)`（否则日志里"Everything 卡住"与"调用方走人"长得一模一样，而这两种故障的处置方式完全不同）。
 
-**这里有两个实测出来的坑。** 其一，**`deadline` 的定时器没有 unref**（0.2.0-rc.2 实测：`process.getActiveResourcesInfo()` 里确实多出一个 `Timeout`），所以 `finally` 里的 `budget[Symbol.dispose]()` 不是可选项——漏掉它，一次提前结束的计数会把事件循环吊到预算耗尽为止（用的是宿主 API，就按宿主的约定清理）。其二，它要求 `tsconfig` 的 `lib` 里有 `esnext.disposable`，否则连 `Symbol.dispose` 这个名字都不存在、`tsc` 直接报错。
+**这里有两个实测出来的坑。** 其一，**`deadline` 的定时器没有 unref**（0.2.0-rc.2 实测，0.2.2-rc.5 复核仍如此：`deadline()` 让 `process.getActiveResourcesInfo()` 里的 `Timeout` 从 0 变 1，`[Symbol.dispose]()` 之后回 0），所以 `finally` 里的 `budget[Symbol.dispose]()` 不是可选项——漏掉它，一次提前结束的计数会把事件循环吊到预算耗尽为止（用的是宿主 API，就按宿主的约定清理）。其二，它要求 `tsconfig` 的 `lib` 里有 `esnext.disposable`，否则连 `Symbol.dispose` 这个名字都不存在、`tsc` 直接报错。
 
 测试里假 seam 的形态不是凭空写的：计数用例只在被 abort 时结束，结束值 `{ signal: 'SIGTERM', exitCode: null }` 取自 `SubprocessOutcome` 的声明，而"abort 会终止子进程"既有 seam 文档（"the spec's abort signal" 启动终止其托管范围）也有实测兜底——宿主今天终止那 5 个卡住的调用后，没有任何 `es` 残留。
 
@@ -131,36 +131,59 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 - **`locale/*.json` 必须写进 `exports`**（`"./locale/*.json": "./locale/*.json"`）：宿主是按 `<包名>/locale/en.json` 这个**模块说明符**解析的，没暴露就解析不到；解析不到返回 `undefined` 而**不是**异常，于是列表静默地没有名字。
 - **`icon.svg` 与 `locale/*.json` 都不在 npm 的自动包含集里**，必须同时写进 `files`；漏了只是"没有图标"，同样不报错。
-- **失败模式不对称**：图标无效只降级成"没有图标"，而 `meta.title` / `meta.description` **存在但不是非空字符串会让宿主的元数据读取整体失败**——内部 `textOf` 抛错、被 `readPluginMeta` 捕获成 `{ error }` 返回（0.2.0-rc.2 复核：`textOf` 仍是 `throw`，所以"连已读到的图标一起丢"这句话仍然成立），列表里既没有名字也没有说明和图标。语言文件名（`en.json` / `zh.json`，文件名就是语言 id）与顶层字段名 `icon`（不是 `dsh.icon`）都由宿主规定，写错不会解析成别的东西，只是不生效。
+- **失败模式不对称**：图标无效只降级成"没有图标"，而 `meta.title` / `meta.description` **存在但不是非空字符串会让宿主的元数据读取整体失败**——内部取文本时抛错、被 `readPluginMeta` 那一整段 `try` 捕获成 `{ error }` 返回（0.2.2-rc.5 复核：`readPluginMeta` 仍是"读完标题、说明、图标才返回，任何一环抛错就整体降级成 `{ error }`"，所以"连已读到的图标一起丢"这句话仍然成立），列表里既没有名字也没有说明和图标。语言文件名（`en.json` / `zh.json`，文件名就是语言 id）与顶层字段名 `icon`（不是 `dsh.icon`）都由宿主规定，写错不会解析成别的东西，只是不生效。
 
 **验证要用宿主自己的函数，而不是本地结构接口**：`readPluginMeta(name, parentURL)` 的 `parentURL` 必须是**本插件实际解析到的那棵树**的基址（连接点安装时就是 profile 目录）——给错目录得到的是 `undefined` 而**不是异常**，这正是这类检查最容易假绿的地方；命令即指南「DSH 升级后的复核」第 13 步。本地那两条断言在 `test/index.test.mjs` 末尾：语言 id 合规、存在值必须是非空字符串、图标在包目录内且 ≤256 KiB、`exports` 与 `files` 两项都在。
 
 **它与 `lib/` 的改动不同：不需要重启 DSH。** 宿主是在 `listPlugins()` 里**按次现读**的，改完刷新插件列表就能看到。
 
-### 9. 与 DSH 0.2.0-rc.2 的交融面（复核于 2026-09-30）
+### 9. 与 DSH 0.2.2-rc.5 的交融面（复核于 2026-11-19）
 
-迁到 **0.2.0-rc.2** 时先做的是"别重复造轮子"这一步：宿主这次把**工具调用的超时**和**超大结果的留存**都收成了公共机制，插件原先自己写的那部分就该让出去。逐项对照（判据都是宿主代码本身，不是文档）：
+迁到 **0.2.0-rc.2** 时先做的是"别重复造轮子"这一步：宿主那次把**工具调用的超时**和**超大结果的留存**都收成了公共机制，插件原先自己写的那部分就该让出去。到 **0.2.2-rc.5** 复核，这条边界一条都没变，所以处置也照旧适用。逐项对照（判据都是宿主代码本身，不是文档）：
 
-| 插件里的机制 | 0.2.0-rc.2 的提供方 | 处置 |
+| 插件里的机制 | 0.2.2-rc.5 的提供方 | 处置 |
 |---|---|---|
 | 工具调用超时（`timeoutMs` 配置） | `ToolDefinition.timeoutMs` + `dsh-tool-call-timeout-policy` | **本就是宿主实现**：包装层读 `ctx.tools.get(name)?.timeoutMs`，把自己的 `deadline` 信号临时换进 `exec.signal`，赢了就返回结构化 `TOOL_TIMEOUT`。插件只声明预算、转发 `exec.signal`，没有自己的定时器 |
 | 计数查询的预算融合 | `@deepseek-ai/dsh-timeout` 的 `deadline` / `timeoutOf` | **改用它**：手写的 `AbortSignal.any([exec.signal, AbortSignal.timeout(...)])` 由宿主这一层取代（见「实现要点」第 7 节） |
 | 超大结果的恢复路径 | `dsh-spill-policy`（+ `ctx.spillStore`，默认组合里已启用） | **插件不必做**：策略层把超预算的 content 存下来，只保留首尾并附上 locator + retrieval hint，而插件渲染的每一行都在那份 content 里 |
 | `presentationMeta` 的 16 KiB 预算 | 无（官方 `dsh-tool-fs-search` 也自带 `capMetaBytes`） | 保留：策略层**只缩 content、从不缩 meta**，这份预算是每个工具自己的责任 |
-| 并发分类 | `ToolDefinition.isConcurrencySafe` | 用宿主字段（官方声明它的仍是五个：`dsh-tool-fs` 的 read/read_image、`dsh-tool-web` 的 web_search/web_fetch、`dsh-tool-subagent` 的 list_subagent_models；0.2.0-rc.2 复核未变） |
+| 并发分类 | `ToolDefinition.isConcurrencySafe` | 用宿主字段（官方声明它的仍是五个：`dsh-tool-fs` 的 read/read_image、`dsh-tool-web` 的 web_search/web_fetch、`dsh-tool-subagent` 的 list_subagent_models；0.2.2-rc.5 复核未变） |
 | 搜索本身 | 官方 `glob` / `grep`（`dsh-tool-fs-search`，ripgrep） | **互补，不是重复**，见下 |
 
-**与官方 `glob`/`grep` 的边界（实测了它们在 0.2.0-rc.2 的完整参数表）**：`glob` 只有 `pattern` + `path`，`grep` 只有 `pattern` + `path` + `include`，默认落在**会话工作区**，靠 ripgrep **遍历文件系统**。本插件的差异不是"也能按名字搜文件"，而是**索引**与**查询语言**：Everything 查的是常驻 NTFS 索引（不遍历磁盘），语言里有 `size:`/`dm:`/`dc:`/`da:`/`ext:`/`attributes:` 这些**元数据条件**、布尔与 `<a|b>` 分组、以及必须限定范围的 `content:`。默认全盘、元数据过滤、工作区之外这三件事官方工具都不覆盖——系统提示词里那句分工（工作区内优先 glob/grep）就是这条边界的落地。
+**与官方 `glob`/`grep` 的边界（在 0.2.2-rc.5 重新核对了完整参数表）**：`glob` 只有 `pattern` + `path`，`grep` 只有 `pattern` + `path` + `include`，默认落在**会话工作区**，靠 ripgrep **遍历文件系统**。本插件的差异不是"也能按名字搜文件"，而是**索引**与**查询语言**：Everything 查的是常驻 NTFS 索引（不遍历磁盘），语言里有 `size:`/`dm:`/`dc:`/`da:`/`ext:`/`attributes:` 这些**元数据条件**、布尔与 `<a|b>` 分组、以及必须限定范围的 `content:`。默认全盘、元数据过滤、工作区之外这三件事官方工具都不覆盖——系统提示词里那句分工（工作区内优先 glob/grep）就是这条边界的落地。
+
+**复核时实测到的一件事（决定"有没有重复造轮子"怎么判）**：`ctx.tools.definitions()` 在不带 scope 时**只列出全局层**，官方 `glob`/`grep` 是 agent 作用域注册的，所以它们**不在**那份列表里——看到"只注册了 `everything_search`"不是宿主缺能力，是作用域问题。因此共存关系要从**组合出来的树**上判：`dsh-tool-fs-search` 与本插件挂在**同一个 `dsh-base` bundle 层**（`dsh-base/cordis.patch.yml` 里点名），两者并列，本插件没有顶掉任何名字。
 
 **官方 glob/grep 自带 spill，而本插件不需要，原因要记住**：它们把结果**采样**成 `globMaxResults`（默认 100）行再渲染，完整列表只在内存里，所以必须自己 `saveText` 并附 locator；本插件渲染的是它**取到的每一行**，超预算部分交给策略层留存。维护时守住这条差异：一旦本插件改成"只渲染抽样"，就必须自己接管 spill，否则模型会把抽样当成全部。
 
 **复核判据（都可重跑，命令见指南「DSH 升级后的复核」）**：
 
-- `pnpm run typecheck` 对 0.2.0-rc.2 类型**零报错**——本插件导入的是宿主类型而非本地镜像，所以这一步就是漂移判据：`defineTool`/`ToolDefinition`、`SubprocessSpawnSpec`/`SubprocessHandle`/`SubprocessOutcome`、`PromptSection`、`HarnessError` 全部未变。
-- 准入闸门 `evaluatePluginCompatibility()` → `COMPATIBLE`（runtime 0.2.0-rc.2）。
+- `pnpm run typecheck` 对 0.2.2-rc.5 类型**零报错**——本插件导入的是宿主类型而非本地镜像，所以这一步就是漂移判据：`defineTool`/`ToolDefinition`、`SubprocessSpawnSpec`/`SubprocessHandle`/`SubprocessOutcome`、`PromptSection`、`HarnessError` 全部未变。
+- 准入闸门 `evaluatePluginCompatibility()` → `COMPATIBLE`（runtime 0.2.2-rc.5）；profile 的 `skippedBundles` 里没有本插件。
+- 端到端 `_rc5/probe/e2e-rc5.mjs` → **88 项断言全过**（真宿主、真 `es.exe`，见下节）。
 - 显示元数据 `readPluginMeta()` 仍返回中英标题、说明与图标，且无 `error` 字段。
 - `inject` 的服务名与官方 `dsh-tool-fs-search` **逐字相同**（`tools`/`systemPrompt`/`subprocess`；`logger` 是环境对象、不进 `inject`，官方同样只用不注入）。
 - 载荷断言通过（10 个文件，含 `icon.svg` 与两个 locale）。
+
+### 9.1 0.2.2-rc.5 的端到端复核环境（`_rc5/`）
+
+只跑单元测试不够：单元测试用的是假 seam，回答不了"宿主 0.2.2-rc.5 里这个工具还能不能注册、能不能被调用、卡片还画不画得出来"。所以复核用一份**独立的宿主安装**跑真 profile：
+
+| 路径 | 内容 |
+|---|---|
+| `_rc5/host/` | 单独 `pnpm install` 的 `@deepseek-ai/dsh@0.2.2-rc.5`（外加 `dsh-app-boot`，为了让探测脚本能用裸模块名 import 到闸门函数） |
+| `_rc5/test-home/` | 独立的 `DSH_HOME`，`profiles/rc5/` 里挂 `dsh-base` + `dsh-web-app` + 本插件（junction 指回工作区仓库） |
+| `_rc5/vendor/` | 解包好的 `0.2.2-rc.5` tarball，离线查 API 用 |
+| `_rc5/probe/e2e-rc5.mjs` | 按段断言：闸门 → 启动 → 注册面 → 提示词段位 → 功能矩阵 → `content:` 安全壳 → 展示层 → 与官方工具的分工 → 完整执行管线 |
+
+**这个隔离环境存在的唯一理由是不可重启线上宿主**：`127.0.0.1:3080` 上的 `dsh web` 是会话自身，探测脚本另起 profile（`--port 0`，随机端口）不会碰到它。反过来，**`_rc5/` 里的任何结论都不能替代"用户重启后可见"的验证**——线上 profile 挂的仍是工作区仓库，重启后才加载新 `lib/`。
+
+**探测脚本踩过的三个坑，写在这里省下一次重跑**：
+
+1. **`defineTool` 会把 `isConcurrencySafe` / `presentCall` / `presentResult` 再包一层参数校验**：不传参数直接调 `definition.isConcurrencySafe()` 会得到 `false`，传非法参数会得到 `undefined`——那是包装层的校验在说话，不是插件声明错了。断言必须带**合法参数**。
+2. **`presentResult` 拿到的是落盘投影，不是原始 value**：宿主传的是 `{ content, meta }`，`meta` 才是 `presentationMeta` 的产物。直接把 execute 的返回值当 `result` 传进去，`result.meta === undefined`，于是永远拿到 `undefined`，看起来像"presenter 坏了"。
+3. **`AssembledSection` 上没有 `order` 字段**：宿主把 `order` 在内部消化掉了。段位只能按**效果**验证——该段出现在装配结果里，且排在 `deployment:persona-suffix` 之前。
+
 
 ## 测试要点
 
@@ -168,7 +191,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **注入类缺陷只能靠断言命令串本身**：mock seam 不经过真实 cmd，`sort_by`/`attributes` 里裸露的 `&` 在 mock 下"测试全绿"。所以回归测试断言的是构造出来的命令行（合法值被白名单收窄成 `-sort date-modified-ascending`、`/aR-H`，非法值在 spawn 之前就抛错），以及"被拒绝的调用不得 spawn"。
 - 通用断言：遍历每条结果，**任何字段值不得为 null**。
 - 判断插件有没有被 DSH 加载，用会话记录的最新一轮 `request/header` 工具表，别问模型"你看到新提示词了吗"（模型侧策略会拒绝逐字复述，且观感可能滞后于下发内容）。
-- 当前 79 项全部通过。
+- 当前 85 项全部通过。
 - **找冗余逻辑和死代码要靠覆盖率，不要靠肉眼**：`node --test --experimental-test-coverage --test-reporter=lcov` 给出 `lib/index.js` 每一行的执行次数，未执行的行就是"要么是死代码、要么是没有测试的可达路径"，两类必须分开处理（见下）。
 - **错误分支要有专门的用例**：这类代码不写用例就永远测不到，而它恰恰是模型唯一能看到的"出事时的说法"。现在每个 `EverythingError` 分支各有一条用例（非数组 JSON、非 ENOENT 的启动失败、`done` 被拒、没有 collected 流、被信号杀死、取消先于 ENOENT、预算 vs 取消），`--test-coverage` 对 `lib/index.js` 报 **100% 行覆盖**（250/250）。
 
@@ -216,20 +239,22 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 | `@deepseek-ai/dsh-system-prompt` | 系统提示词段落注册 |
 | `@deepseek-ai/dsh-timeout` | 计数的独立预算（`deadline`/`timeoutOf`），见「实现要点」第 7 节 |
 
-已测试版本：**DSH v0.2.0-rc.2**（2026-09）与 **v0.2.1-rc.2**（2026-10），双轨支持。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
+已测试版本：**DSH v0.2.2-rc.5**（2026-11），单基线。更早的宿主（`0.2.0-rc.2` / `0.2.1-rc.2`）已不再维护，`peerDependencies` 也不再为其留窗口。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
 
-`schemastery` 是唯一进 `dependencies` 的包（代码真正 import 它），范围写 **`~3.18.4`**：宿主的每一个包都声明 `~3.18.4`，宿主实体也是 3.18.4，所以插件解析到的是**同一个 `.pnpm/@deepseek-ai+schemastery@3.18.4`**。此前写 `^3.18.2` 时 lock 把本包钉在 3.18.2，同一进程里存在两份 schemastery——它不报错（`Config` 只被 cordis 当鸭子类型调用），但类型图会因此分叉，`TS2883` 就是那份分叉的产物。**升级 DSH 时把这条范围一起复核**（宿主换到新的 schemastery 行时必须同步跟）。
+`schemastery` 是唯一进 `dependencies` 的包（代码真正 import 它），范围写 **`~3.19.0`**：宿主 0.2.2-rc.5 的每个包都声明 `~3.19.0`，所以插件解析到的是**同一个 `.pnpm/@deepseek-ai+schemastery@3.19.0`**。此前写 `^3.18.2` 时 lock 把本包钉在 3.18.2，同一进程里存在两份 schemastery——它不报错（`Config` 只被 cordis 当鸭子类型调用），但类型图会因此分叉，`TS2883` 就是那份分叉的产物。**升级 DSH 时把这条范围一起复核**（宿主换到新的 schemastery 行时必须同步跟）。
 
-## 与宿主版本的绑定点（双基线：0.2.0-rc.2 与 0.2.1-rc.2）
+## 与宿主版本的绑定点（单基线：0.2.2-rc.5）
 
 `devDependencies` 里那几个宿主包**钉死版本号而非范围**：它们决定 `tsc` 拿哪一版类型校验。**连接点挂载时运行时用的是宿主那一份**，所以不钉死就会出现"类型按旧版通过、运行按新版行为"的错位——本插件曾长期拿 0.1.5-rc.1 的类型编译。
 
 | 绑定点 | 内容 | 为何必须 |
 |---|---|---|
-| `peerDependencies` | 宿主包写双轨范围 `^0.2.0-rc.2 \|\| ^0.2.1-rc.2`，`cordis` 走自己的版本线 `^4.0.4` | 预发布版本只被「同一 major.minor.patch 且带预发布」的比较器放行，`^0.2.0-rc.2` 匹配不到 `0.2.1-rc.2`；必须按预发布代显式用 `\|\|` 扩展窗口。测试 `index.test.mjs` 断言所有宿主 peer 范围一致且与 README 兼容行一一对应 |
-| `devDependencies` | 当前基线版本号，精确 | 让 `tsc` 按基线宿主校验；next 版本的类型与端到端在 `_next-compat/` 隔离环境中复核 |
+| `peerDependencies` | 五个宿主包统一写单臂 `^0.2.2-rc.5`，`cordis` 走自己的版本线 `^4.1.0`（0.2.2-rc.5 的 `dsh-base` 声明 `~4.1.0`） | 支持窗口已经只剩一代，不再需要 `\|\|` 拼臂。预发布版本的放行规则没有变（只被「同一 major.minor.patch 且带预发布」的比较器放行），所以**将来若再出现双宿主窗口**，仍然只能按代显式拼 `\|\|`。测试 `index.test.mjs` 断言所有宿主 peer 范围一致且与 README 兼容行一一对应——单臂时它退化成"只有一行兼容性声明"，改臂数不需要改测试 |
+| `devDependencies` | 当前基线版本号，精确 | 让 `tsc` 按基线宿主校验；端到端在 `_rc5/` 隔离环境中复核（见「9.1」） |
 | 导入的宿主类型 | `SubprocessSpawnSpec`/`SubprocessHandle`/`SubprocessOutcome`、`PromptSection`、`ToolRunContext`/`ToolCallView`/`ToolResultView` | 本地结构接口**不会**因宿主漂移而报错（指南「类型定义原则」）；改用宿主类型后 `exec.agent.session.header.cwd` 这类访问点全部受检 |
 | `Config` 的标注 | `configSchema as unknown as ReturnType<typeof z.any>` | 三种写法实测：原样导出在**两份 schemastery 同版本**时能过、分叉时报 `TS2883`（"cannot be named without a reference to 'Schema'"）；直接标注两边都报 `TS2322`（`Schema` 的 `data` 参数逆变，与副本数量无关）；断言恒过但放弃检查。宿主换 schemastery 行会让两份实体重新分叉，断言让那时只多一个可移植声明、而不是构建直接红 |
+
+**别把准入闸门当成 peer 声明的体检**：闸门判的是 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })`，而 `includePrerelease: true` 会把预发布门禁**整体取消**，于是 `^0.2.0-rc.2` 这种"陈旧但开口很大"的范围仍然放行 `0.2.2-rc.5`——本次升级实测：改 `peerDependencies` 之前 `evaluatePluginCompatibility()` 就已经返回 `undefined`，插件在 0.2.2-rc.5 上照常装载。**同一对版本号在 npm/pnpm 侧的判定正好相反**（不带 `includePrerelease` 时 `satisfies('0.2.2-rc.5', '^0.2.0-rc.2') === false`），所以陈旧范围真正的代价不在宿主装载，而在**包管理器的 peer 解析**与"这份声明声称支持谁"的可读性。也就是说闸门绿不代表声明写得对：它只能抓住"真的落在范围外"（实测 `^0.1.7-rc.2` 对 `0.2.2-rc.5` 为 `false`，会被检出），抓不住"范围对但已经不代表支持窗口"。改 peer 的理由是后者；反过来，用户报"插件不激活"时也别先怀疑闸门——先按「9.1」的清单跑一遍。
 
 ### 交融点（用满新版能力，而不只是"能跑"）
 
@@ -237,7 +262,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 - **presenter 返回宿主视图类型**：`presentResult` 返回的就是宿主的 `SearchPathsResultView`（`card: 'search'` + `shape: 'paths'`），与官方 glob 同一张卡；`presentCall` 保持 `card: 'generic'` + `kind: 'search'`——宿主文档明确：搜索的待定态没有路径可显示。
 - **`presentationMeta` 封顶 16 KiB**：该投影**随会话日志持久化**，穷举搜索（`max_results: 100000`）不能把每条路径都写进去。按宿主 `capMetaBytes` 的口径逐条量**序列化后**的长度——Windows 路径的反斜杠在 JSON 里是 `\\`，用 `byteLength(path)` 估算会把预算低估约一倍（第一版就是这么错的，被新测试抓住）。
 - **stdout 双重校验**：`lossy` → `ES_RAW_OUTPUT_OVERFLOW`；未标记 lossy 但字节数超预算同样拒绝。与官方 `completeStdout` 同形，两个发现类工具的失败方式一致。
-- **spill 有意不接（指的是原始 stdout 那一层）**：seam 提供 `SubprocessOutputRead.spillPath`（大输出落盘），但官方 `completeStdout` 在 lossy 时**直接失败**而不读 spill——不解析可能不完整的流。本插件跟随该决定。注意这与 0.2.0 的 `dsh-spill-policy` **不是同一层**：那一层管的是模型可见 content 的留存与提取（见「实现要点」第 9 节），本插件没有理由重造。
+- **spill 有意不接（指的是原始 stdout 那一层）**：seam 提供 `SubprocessOutputRead.spillPath`（大输出落盘），但官方 `completeStdout` 在 lossy 时**直接失败**而不读 spill——不解析可能不完整的流。本插件跟随该决定。注意这与 `dsh-spill-policy` **不是同一层**：那一层管的是模型可见 content 的留存与提取（见「实现要点」第 9 节），本插件没有理由重造。
 - **工具调用的超时交给宿主**：`defineTool({ timeoutMs })` 声明预算，`dsh-tool-call-timeout-policy` 负责武装 `exec.signal` 并把超时转成 `TOOL_TIMEOUT`。插件内**没有**自己的定时器，也不把超时翻译成自定义错误码——两条路径同时存在就必然有一条是死代码（见「实现要点」第 9 节）。
 - **计数预算用宿主的超时算术**：`@deepseek-ai/dsh-timeout` 的 `deadline`/`timeoutOf`，而不是手写 `AbortSignal.any` + `AbortSignal.timeout`（见「实现要点」第 7 节）。
 - **插件列表的显示元数据**：`locale/{en,zh}.json` + `icon.svg` + 顶层 `icon` 字段，宿主不激活插件就能读出名称、说明与图标（见「实现要点」第 8 节）。
@@ -258,7 +283,7 @@ es 从左到右严格解析选项，且对其搜索模式开关是**贪婪**的�
 
 工作区级文档 `PLUGIN_RELEASE_GUIDE.md`（位于仓库外的 `DSH_Workspace/CreatePlugin/`，**不随 git 分发**）收录了更完整的开发、发布与排错经验：构建提交纪律、连接点安装的连带后果、模型文案的落点与取证、`tsc` 拼接缝等。开发时对照查阅。
 
-**版本号怎么算、什么时候改，也以它为准**（「插件版本号」一节）：号写成「支持窗口下界的宿主版本收掉预发布里的点 + `.<n>`」（双轨支持下为 `0.2.0-rc2.2`，窗口上界由 `peerDependencies` 与 README 表达；下次 tuple 迁移至 `0.2.1` 时采用保留点的 `rc.2.N` 形状，如 `0.2.1-rc.2.1`），而**改号只在用户要求时发生**——用户会在推送前提出，没提就不要动 `package.json` 的 `version`，也不要追问"要不要升号／要不要推送"。
+**版本号怎么算、什么时候改，也以它为准**（「插件版本号」一节）：号写成「支持窗口下界的宿主版本收掉预发布里的点 + `.<n>`」；窗口上界（如今没有上界了）由 `peerDependencies` 与 README 表达。**当前 `version` 仍是 `0.2.0-rc2.2`，而支持窗口已经换成 `0.2.2-rc.5`——这是有意留下的不一致，不是遗漏**：按该节规则，只有用户明确要求时才动 `version`，而 tuple 迁移正是改号的那类动作，号在用户要求时按保留点的 `rc.5.N` 形状写成 `0.2.2-rc.5.1`（新形状绑在 tuple 迁移上；`0.2.2-rc.5.1` 大于 `0.2.0-rc2.2`，不会触发降级判定）。**不要因为读到这行就顺手改号，也不要追问"要不要升号／要不要推送"**。
 
 ## 许可证
 
